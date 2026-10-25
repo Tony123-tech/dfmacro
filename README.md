@@ -31,13 +31,42 @@ def result():
 
 Write bare column names. Use native Python operators. No `pl.col`, no repeated `df`.
 
+### Advanced querying
+
 ```python
 @dfmacro.enable(df)
-def expensive_electronics():
-    return df[(price > 100) & (category == "electronics")]
+def analysis():
+    return (
+        df[price > 100]
+        .mutate(
+            double_price=price * 2,
+            level=when(price > 150, "premium").otherwise("standard"),
+        )
+        .select(category, double_price, level)
+        .groupby(category)
+        .agg(avg_price=price.mean())
+    )
 ```
 
-The expression is lazy: it builds a tree, then compiles to the right backend when `df[...]` is evaluated.
+### String and date operations
+
+```python
+@dfmacro.enable(df)
+def time_series():
+    return df[
+        category.str.contains("elect") & (date.dt.year == 2024)
+    ]
+```
+
+### SQL generation
+
+```python
+expr = price > 100
+sql_where = dfmacro.compile_to_sql(expr)
+# Output: '("price" > 100)'
+```
+
+The expression is lazy: it builds a tree, then compiles to the right backend when evaluated.
 
 ## Installation
 
@@ -45,7 +74,22 @@ The expression is lazy: it builds a tree, then compiles to the right backend whe
 pip install dfmacro
 ```
 
-Requires Python 3.8+ and pandas 1.5+. Polars support is planned.
+Requires Python 3.8+ and pandas 1.5+. Polars support is included.
+
+## Supported features
+
+- **Filtering**: `df[price > 100]`, `&`, `|`, `~`
+- **Selection**: `df.select(price, category)`
+- **Aggregation**: `df.groupby(category).agg(avg_price=price.mean())`
+- **Mutation**: `df.mutate(double=price * 2)`
+- **Conditional**: `when(price > 100, "high").otherwise("low")`
+- **Joins**: `df.join(other, on=category, how="left")`
+- **Sorting**: `df.order_by(price, descending=True)`
+- **Row operations**: `head`, `tail`, `slice`, `drop`, `rename`
+- **String accessors**: `.str.contains()`, `.str.lower()`, `.str.replace()`, `.str.extract()`, and more
+- **Date accessors**: `.dt.year`, `.dt.month`, `.dt.dayofweek`, `.dt.strftime()`, and more
+- **SQL generation**: `dfmacro.compile_to_sql(expr)`
+- **Jupyter support**: `%load_ext dfmacro` + `%dfmacro df`
 
 ## How it works
 
@@ -71,7 +115,7 @@ Six layers, and you only ever see the friendliest one:
   ```python
   df[(price > 100) & (category == "electronics")]
   ```
-- **Polars backend is a stub.** pandas is the only fully supported backend today.
+- **Chained string selection.** `df[price > 100]["category"]` returns a native pandas Series, not a `DF`. Use `.select(category)` for chainable operations.
 
 ## Development
 
