@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dfmacro"
+version = "0.0.1"
+description = "Native Python syntax for DataFrame expressions"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.optional-dependencies]
+pandas = ["pandas>=1.5"]
+polars = ["polars>=0.19"]
+test = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["dfmacro*"]
+
+[tool.pyright]
+include = ["dfmacro"]
+exclude = ["dfmacro/tests"]
+reportCallIssue = "none"
+
+[project.entry-points."ipython_extensions"]
+dfmacro = "dfmacro:load_ipython_extension"
