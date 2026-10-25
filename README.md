@@ -120,7 +120,7 @@ Six layers, and you only ever see the friendliest one:
 ## Development
 
 ```bash
-git clone https://github.com/yourname/dfmacro.git
+git clone https://github.com/Tony123-tech/dfmacro.git
 cd dfmacro
 python -m venv .venv
 source .venv/bin/activate
