@@ -26,23 +26,25 @@ def compile_expr(expr: Expr, df: Any) -> Any:
         )
 
     if _is_polars(df):
+        # Fix: Use exact type name check for LazyFrame instead of hasattr
+        if type(df).__name__ == "LazyFrame":
+            raise CompileError(
+                "Polars LazyFrame support coming soon. "
+                "Please call .collect() before using dfmacro."
+            )
         from . import polars as _polars_backend
-
-        # Check if it's a LazyFrame
-        if hasattr(df, "collect") and not hasattr(df, "filter"):
-            raise CompileError("Polars LazyFrame support coming soon.")
         return _polars_backend.compile_expr(expr, df)
 
     if _is_pandas(df):
         from . import pandas as _pandas_backend
-
         return _pandas_backend.compile_expr(expr, df)
 
-    raise CompileError(f"Unsupported DataFrame type: {type(df).__module__}.")
+    raise CompileError(
+        f"Unsupported DataFrame type: {type(df).__module__}."
+    )
 
 
 def compile_to_sql(expr: Expr) -> str:
     """Compile an expression tree into a SQL WHERE clause."""
     from . import sql as _sql_backend
-
     return _sql_backend.compile_expr(expr)
