@@ -7,12 +7,19 @@ import sys
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from .compiler import compile_expr
+from .compiler import _is_dask_dataframe, compile_expr
 from .expr import AggExpr, ColumnExpr, Expr
 
 
 def _is_pandas(obj: Any) -> bool:
     return type(obj).__module__.startswith("pandas")
+
+
+def _raise_if_dask_unsupported(df: Any, operation: str) -> None:
+    if _is_dask_dataframe(df):
+        raise NotImplementedError(
+            f"{operation} is not currently supported for Dask DataFrames."
+        )
 
 
 def _resolve_column_name(col: Any) -> Any:
@@ -66,6 +73,7 @@ class GroupByProxy:
     _by: Any
 
     def __init__(self, df: Any, by: Any) -> None:
+        _raise_if_dask_unsupported(df, "Groupby aggregation")
         self._df = df
         self._by = _resolve_column_name(by)
 
@@ -141,6 +149,7 @@ class DF:
         return DF(self._df.with_columns(polars_operation(pl.selectors.numeric())))
 
     def _membership_join(self, other: Any, on: Any, matched: bool) -> DF:
+        _raise_if_dask_unsupported(self._df, "Semi/anti joins")
         on_cols = _resolve_column_names(on)
         other_df = _unwrap_dataframe(other)
         if not _is_pandas(self._df):
@@ -193,6 +202,8 @@ class DF:
             mask = compile_expr(key, self._df)
             if _is_pandas(self._df):
                 return DF(self._df[mask])
+            if _is_dask_dataframe(self._df):
+                return DF(self._df[mask])
             else:
                 return DF(self._df.filter(mask))
         if isinstance(key, str):
@@ -204,6 +215,8 @@ class DF:
         cols = [arg.name if hasattr(arg, "name") else arg for arg in args]
         if _is_pandas(self._df):
             return DF(self._df[cols])
+        if _is_dask_dataframe(self._df):
+            return DF(self._df[cols])
         else:
             return DF(self._df.select(cols))
 
@@ -211,7 +224,7 @@ class DF:
         return GroupByProxy(self._df, by)
 
     def mutate(self, **kwargs: Any) -> DF:
-        if _is_pandas(self._df):
+        if _is_pandas(self._df) or _is_dask_dataframe(self._df):
             new_df = self._df
             for col_name, expr in kwargs.items():
                 if isinstance(expr, Expr):
@@ -266,6 +279,8 @@ class DF:
         col_name = _resolve_column_name(by)
         if _is_pandas(self._df):
             return DF(self._df.sort_values(by=col_name, ascending=not descending))
+        if _is_dask_dataframe(self._df):
+            return DF(self._df.sort_values(by=col_name, ascending=not descending))
         else:
             return DF(self._df.sort(col_name, descending=descending))
 
@@ -276,6 +291,8 @@ class DF:
             else _resolve_column_name(by)
         )
         if _is_pandas(self._df):
+            return DF(self._df.sort_values(by=by, ascending=ascending))
+        if _is_dask_dataframe(self._df):
             return DF(self._df.sort_values(by=by, ascending=ascending))
         descending = (
             [not value for value in ascending]
@@ -649,6 +666,7 @@ class DF:
         )
 
     def merge(self, other: Any, on: Any, how: str = "inner") -> DF:
+        _raise_if_dask_unsupported(self._df, "Merge")
         on_cols = _resolve_column_names(on)
         other_df = _unwrap_dataframe(other)
         if _is_pandas(self._df):
@@ -660,6 +678,11 @@ class DF:
         frames = [_unwrap_dataframe(frame) for frame in frames]
         if not frames:
             raise ValueError("concat requires at least one DataFrame.")
+        dask_frame = next(
+            (frame for frame in frames if _is_dask_dataframe(frame)), None
+        )
+        if dask_frame is not None:
+            _raise_if_dask_unsupported(dask_frame, "Concatenation")
         if _is_pandas(frames[0]):
             import pandas as pd
 
@@ -673,6 +696,7 @@ class DF:
         raise ValueError("axis must be 0 or 1.")
 
     def merge_asof(self, other: Any, on: Any) -> DF:
+        _raise_if_dask_unsupported(self._df, "As-of merge")
         on_col = _resolve_column_name(on)
         other_df = _unwrap_dataframe(other)
         if _is_pandas(self._df):
@@ -684,6 +708,7 @@ class DF:
         )
 
     def cross_join(self, other: Any) -> DF:
+        _raise_if_dask_unsupported(self._df, "Cross join")
         other_df = _unwrap_dataframe(other)
         if _is_pandas(self._df):
             return DF(self._df.merge(other_df, how="cross"))
@@ -748,6 +773,7 @@ class DF:
         )
 
     def join(self, other: Any, on: Any, how: str = "inner") -> DF:
+        _raise_if_dask_unsupported(self._df, "Join")
         on_col = _resolve_column_name(on)
         other_df = _unwrap_dataframe(other)
         if _is_pandas(self._df):

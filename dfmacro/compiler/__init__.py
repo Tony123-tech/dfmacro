@@ -19,6 +19,10 @@ def _is_pandas(df: Any) -> bool:
     return type(df).__module__.startswith("pandas")
 
 
+def _is_dask_dataframe(df: Any) -> bool:
+    return type(df).__module__.startswith("dask.dataframe")
+
+
 def compile_expr(expr: Expr, df: Any) -> Any:
     if not isinstance(expr, Expr):
         raise CompileError(
@@ -38,6 +42,10 @@ def compile_expr(expr: Expr, df: Any) -> Any:
     if _is_pandas(df):
         from . import pandas as _pandas_backend
         return _pandas_backend.compile_expr(expr, df)
+
+    if _is_dask_dataframe(df):
+        from . import dask as _dask_backend
+        return _dask_backend.compile_expr(expr, df)
 
     raise CompileError(
         f"Unsupported DataFrame type: {type(df).__module__}."

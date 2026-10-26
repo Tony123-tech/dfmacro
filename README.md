@@ -75,6 +75,7 @@ pip install dfmacro
 ```
 
 Requires Python 3.8+ and pandas 1.5+. Polars support is included.
+Optional Dask DataFrame support is available with `pip install 'dfmacro[dask]'`.
 
 ## Supported features
 
@@ -101,6 +102,10 @@ Pandas supports `set_index` and `reset_index`; Polars has no pandas-style index,
 so `set_index` raises `NotImplementedError` and `reset_index` leaves the frame unchanged.
 `apply` and `asfreq` are pandas-only. Polars `resample` infers its time column only
 when the frame has exactly one `Date` or `Datetime` column; otherwise pass `on=`.
+Dask supports lazy expression filtering, column selection, mutation, and Dask-native
+sorting. Expressions are evaluated with the pandas compiler independently on each
+partition; cross-partition operations such as groupby and joins are not yet exposed
+through the Dask wrapper.
 
 ## How it works
 
