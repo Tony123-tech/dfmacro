@@ -13,6 +13,7 @@ dependencies = []
 pandas = ["pandas>=1.5"]
 polars = ["polars>=0.19"]
 test = ["pytest>=7"]
+duckdb = ["duckdb>=1.0.0"]
 
 [tool.setuptools.packages.find]
 include = ["dfmacro*"]
@@ -24,3 +25,9 @@ reportCallIssue = "none"
 
 [project.entry-points."ipython_extensions"]
 dfmacro = "dfmacro:load_ipython_extension"
+
+[project.scripts]
+dfmacro = "dfmacro.cli:main"
+
+[tool.ruff.lint]
+ignore = ["F821"]

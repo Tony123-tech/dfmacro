@@ -89,3 +89,10 @@ def test_unsupported_dataframe_type_raises():
 
     with pytest.raises(CompileError, match="Unsupported DataFrame type"):
         compile_expr(ColumnExpr("price"), FakeDF())
+
+
+def test_typo_suggestion(df):
+    # User typed 'prce' instead of 'price'
+    expr = ColumnExpr("prce") > 100
+    with pytest.raises(CompileError, match="Did you mean 'price'"):
+        compile_expr(expr, df)

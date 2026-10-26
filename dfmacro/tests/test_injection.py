@@ -61,7 +61,7 @@ def test_basic_injection_visible_in_body():
     mapping = {"price": FakeColumn("price")}
 
     def target():
-        return price  # noqa: F821
+        return price
 
     tracer = _install_tracer_for(target, mapping)
     sys.settrace(tracer)
@@ -79,7 +79,7 @@ def test_no_leak_into_caller_frame():
     mapping = {"price": FakeColumn("price")}
 
     def target():
-        return price  # noqa: F821
+        return price
 
     tracer = _install_tracer_for(target, mapping)
     sys.settrace(tracer)
@@ -103,7 +103,7 @@ def test_nested_function_does_not_leak():
 
     def target():
         def inner():
-            return price  # noqa: F821
+            return price
 
         return inner
 

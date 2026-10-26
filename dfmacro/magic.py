@@ -36,7 +36,6 @@ except ImportError:
 
 
 from .df_wrapper import DF
-from .enable import enable
 
 
 @magics_class

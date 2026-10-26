@@ -7,6 +7,7 @@ import dis
 import sys
 from typing import Any, Callable, TypeVar
 
+from .ast_rewriter import rewrite_function
 from .df_wrapper import DF
 from .expr import ColumnExpr
 from .injection import get_strategy, inject_or_raise
@@ -17,8 +18,10 @@ _BUILTIN_NAMES = frozenset(dir(builtins))
 _DF_NAMES = ("df", "data")
 
 # Global registry to track dynamically added column names per frame.
-# Key is id(frame), value is a list of injected names.
 _DYNAMIC_NAMES: dict[int, list[str]] = {}
+
+# 🔥 Toggle this to True to use the new AST approach
+USE_AST = True
 
 
 def _register_dynamic_name(frame: Any, name: str) -> None:
@@ -48,10 +51,42 @@ def enable(df: Any) -> Callable[[F], F]:
     wrapped = DF(df)
 
     def decorator(func: F) -> F:
+        # ---------------------------------------------------------
+        # NEW: AST Rewriting Path
+        # ---------------------------------------------------------
+        if USE_AST:
+            try:
+                # Rewrite the function using AST
+                new_func = rewrite_function(func)
+
+                # Wrap the new function so that we still inject the DF wrapper
+                def ast_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    # We need to replace the original df with our wrapped DF
+                    # in the arguments before calling the rewritten function
+                    import inspect
+
+                    sig = inspect.signature(new_func)
+                    bound = sig.bind(*args, **kwargs)
+
+                    for df_name in _DF_NAMES:
+                        if df_name in bound.arguments:
+                            bound.arguments[df_name] = wrapped
+
+                    return new_func(*bound.args, **bound.kwargs)
+
+                return ast_wrapper  # type: ignore[return-value]
+            except Exception as e:
+                print(
+                    f"[dfmacro] AST rewrite failed ({e}), falling back to sys.settrace."
+                )
+                # Fall through to the old method if AST fails
+
+        # ---------------------------------------------------------
+        # OLD: sys.settrace Path (Fallback)
+        # ---------------------------------------------------------
         strategy = get_strategy()
         loaded_names = _scan_load_global_names(func)
 
-        # Pre-process closure cells if they contain our df.
         freevars = func.__code__.co_freevars
         closure = func.__closure__ or ()
 
@@ -63,14 +98,12 @@ def enable(df: Any) -> Callable[[F], F]:
             if event == "call" and frame.f_code is func.__code__:
                 local_map: dict[str, Any] = {}
 
-                # 1. Inject missing column names
                 existing = set(frame.f_globals) | set(frame.f_builtins)
                 for name in loaded_names:
                     if name in existing:
                         continue
                     local_map[name] = ColumnExpr(name)
 
-                # 2. Aggressively inject the DataFrame wrapper into the frame
                 for df_name in _DF_NAMES:
                     local_map[df_name] = wrapped
 
@@ -85,11 +118,9 @@ def enable(df: Any) -> Callable[[F], F]:
         ) -> Any:
             def local_tracer(frame: Any, event: str, arg: Any) -> Any:
                 if frame is target_frame and event in ("return", "exception"):
-                    # Cleanup original injected names
                     if injected_names:
                         strategy.cleanup(frame, injected_names)
 
-                    # Cleanup dynamic names
                     dynamic = _DYNAMIC_NAMES.pop(id(target_frame), [])
                     for name in dynamic:
                         frame.f_globals.pop(name, None)
@@ -105,7 +136,6 @@ def enable(df: Any) -> Callable[[F], F]:
                 return func(*args, **kwargs)
             finally:
                 sys.settrace(old_trace)
-                # Ensure cleanup even if tracer failed
                 _DYNAMIC_NAMES.pop(id(sys._getframe(1)), None)
 
         return wrapper  # type: ignore[return-value]

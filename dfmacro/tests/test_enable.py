@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -88,7 +87,7 @@ def test_nested_function_does_not_see_injection(df):
     @enable(df)
     def outer():
         def inner():
-            return price  # noqa: F821
+            return price
 
         return inner
 
@@ -258,7 +257,7 @@ def test_explain(df):
 def test_mutate_chain_filter(df):
     @enable(df)
     def result():
-        return df.mutate(double=price * 2)[double > 100]  # noqa: F821
+        return df.mutate(double=price * 2)[double > 100]
 
     out = result()
     # price: 150 -> double 300 (keep)
@@ -267,3 +266,29 @@ def test_mutate_chain_filter(df):
     assert len(out) == 3
     assert list(out.raw["price"]) == [150, 200, 80]
     assert "double" in out.columns
+
+
+def test_lazy_evaluation(df):
+    @enable(df)
+    def result():
+        # Build the plan but do NOT execute it yet
+        lazy_df = df.lazy()
+        plan = (
+            lazy_df[price > 100]
+            .mutate(double_price=price * 2)
+            .select(category, double_price)
+        )
+
+        # Assert that the plan is recorded (still lazy)
+        assert len(plan._plan) == 3
+        assert plan._plan[0][0] == "filter"
+        assert plan._plan[1][0] == "mutate"
+        assert plan._plan[2][0] == "select"
+
+        # Execute the plan
+        return plan.collect()
+
+    out = result()
+    assert list(out.columns) == ["category", "double_price"]
+    assert len(out) == 2
+    assert list(out.raw["double_price"]) == [300, 400]

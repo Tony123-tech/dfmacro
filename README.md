@@ -85,11 +85,22 @@ Requires Python 3.8+ and pandas 1.5+. Polars support is included.
 - **Conditional**: `when(price > 100, "high").otherwise("low")`
 - **Joins**: `df.join(other, on=category, how="left")`
 - **Sorting**: `df.order_by(price, descending=True)`
-- **Row operations**: `head`, `tail`, `slice`, `drop`, `rename`
-- **String accessors**: `.str.contains()`, `.str.lower()`, `.str.replace()`, `.str.extract()`, and more
-- **Date accessors**: `.dt.year`, `.dt.month`, `.dt.dayofweek`, `.dt.strftime()`, and more
+- **Row operations**: `head`, `tail`, `slice`, `drop`, `rename`, `sort_values`, `filter`, `between`
+- **Index and data shaping**: `set_index`, `reset_index`, `assign`, `isin`
+- **Statistics and windows**: `describe`, `value_counts`, `corr`, `cov`, `pct_change`, `shift`, `diff`, `cumsum`, `cummax`, `cummin`
+- **Reshaping and time series**: `melt`, `pivot`, `pivot_table`, `rolling`, `ewm`, `resample`, `asfreq`, `interpolate`, `ffill`, `bfill`
+- **Aggregations and joins**: `nunique`, `mode`, `skew`, `kurt`, `merge`, `concat`, `merge_asof`, `cross_join`, `semi_join`, `anti_join`
+- **DataFrame helpers and math**: `apply` (pandas), `pipe`, `clip`, `abs`, `round`, `log`, `sqrt`, `pow`
+- **String accessors**: `.str.contains()`, `.str.lower()`, `.str.replace()`, `.str.extract()`, `.str.fullmatch()`, Unicode predicates, and more
+- **Date accessors**: `.dt.year`, `.dt.month`, `.dt.dayofweek`, `.dt.week`, `.dt.is_leap_year`, `.dt.floor()`, `.dt.strftime()`, and more
 - **SQL generation**: `dfmacro.compile_to_sql(expr)`
 - **Jupyter support**: `%load_ext dfmacro` + `%dfmacro df`
+
+`between(column, lower, upper)` filters rows to the inclusive range by default.
+Pandas supports `set_index` and `reset_index`; Polars has no pandas-style index,
+so `set_index` raises `NotImplementedError` and `reset_index` leaves the frame unchanged.
+`apply` and `asfreq` are pandas-only. Polars `resample` infers its time column only
+when the frame has exactly one `Date` or `Datetime` column; otherwise pass `on=`.
 
 ## How it works
 

@@ -256,56 +256,115 @@ class MathExpr(Expr):
 class StringExpr:
     __slots__ = ("_expr",)
 
+    _expr: Expr
+
     def __init__(self, expr: Expr) -> None:
         self._expr = expr
 
-    def contains(self, pat: str, regex: bool = False) -> Expr:
+    def contains(self, pat: str, regex: bool = False) -> StringMethodExpr:
         return StringMethodExpr("contains", self._expr, {"pat": pat, "regex": regex})
 
-    def startswith(self, pat: str) -> Expr:
+    def startswith(self, pat: str) -> StringMethodExpr:
         return StringMethodExpr("startswith", self._expr, {"pat": pat})
 
-    def endswith(self, pat: str) -> Expr:
+    def endswith(self, pat: str) -> StringMethodExpr:
         return StringMethodExpr("endswith", self._expr, {"pat": pat})
 
-    def lower(self) -> Expr:
+    def lower(self) -> StringMethodExpr:
         return StringMethodExpr("lower", self._expr, {})
 
-    def upper(self) -> Expr:
+    def upper(self) -> StringMethodExpr:
         return StringMethodExpr("upper", self._expr, {})
 
-    def strip(self) -> Expr:
-        return StringMethodExpr("strip", self._expr, {})
+    def strip(self, chars: str | None = None) -> StringMethodExpr:
+        return StringMethodExpr("strip", self._expr, {"chars": chars})
 
-    def len(self) -> Expr:
+    def len(self) -> StringMethodExpr:
         return StringMethodExpr("len", self._expr, {})
 
-    def replace(self, pat: str, repl: str) -> Expr:
-        return StringMethodExpr("replace", self._expr, {"pat": pat, "repl": repl})
+    def replace(
+        self, pat: str, repl: str, regex: bool = False
+    ) -> StringMethodExpr:
+        return StringMethodExpr(
+            "replace", self._expr, {"pat": pat, "repl": repl, "regex": regex}
+        )
 
-    def split(self, pat: str) -> Expr:
+    def split(self, pat: str) -> StringMethodExpr:
         return StringMethodExpr("split", self._expr, {"pat": pat})
 
-    def slice(self, start: int, length: int) -> Expr:
-        return StringMethodExpr("slice", self._expr, {"start": start, "length": length})
+    def slice(
+        self, start: int | None = None, length: int | None = None
+    ) -> StringMethodExpr:
+        return StringMethodExpr(
+            "slice", self._expr, {"start": start, "length": length}
+        )
 
-    def pad(self, width: int, side: str = "left") -> Expr:
-        return StringMethodExpr("pad", self._expr, {"width": width, "side": side})
+    def pad(
+        self, width: int, side: str = "left", fillchar: str = " "
+    ) -> StringMethodExpr:
+        if side not in {"left", "right", "both"}:
+            raise ValueError("side must be 'left', 'right', or 'both'.")
+        if len(fillchar) != 1:
+            raise ValueError("fillchar must be exactly one character.")
+        return StringMethodExpr(
+            "pad",
+            self._expr,
+            {"width": width, "side": side, "fillchar": fillchar},
+        )
 
-    def zfill(self, width: int) -> Expr:
+    def zfill(self, width: int) -> StringMethodExpr:
         return StringMethodExpr("zfill", self._expr, {"width": width})
 
-    def match(self, pat: str) -> Expr:
+    def match(self, pat: str) -> StringMethodExpr:
         return StringMethodExpr("match", self._expr, {"pat": pat})
 
-    def extract(self, pat: str) -> Expr:
-        return StringMethodExpr("extract", self._expr, {"pat": pat})
+    def extract(self, pat: str, group: int = 1) -> StringMethodExpr:
+        if group < 1:
+            raise ValueError("group must be a positive, 1-based capture index.")
+        return StringMethodExpr("extract", self._expr, {"pat": pat, "group": group})
+
+    def lstrip(self, chars: str | None = None) -> StringMethodExpr:
+        return StringMethodExpr("lstrip", self._expr, {"chars": chars})
+
+    def rstrip(self, chars: str | None = None) -> StringMethodExpr:
+        return StringMethodExpr("rstrip", self._expr, {"chars": chars})
+
+    def title(self) -> StringMethodExpr:
+        return StringMethodExpr("title", self._expr, {})
+
+    def count(self, pat: str) -> StringMethodExpr:
+        return StringMethodExpr("count", self._expr, {"pat": pat})
+
+    def reverse(self) -> StringMethodExpr:
+        return StringMethodExpr("reverse", self._expr, {})
+
+    def fullmatch(self, pat: str) -> StringMethodExpr:
+        return StringMethodExpr("fullmatch", self._expr, {"pat": pat})
+
+    def isalnum(self) -> StringMethodExpr:
+        return StringMethodExpr("isalnum", self._expr, {})
+
+    def isalpha(self) -> StringMethodExpr:
+        return StringMethodExpr("isalpha", self._expr, {})
+
+    def isdigit(self) -> StringMethodExpr:
+        return StringMethodExpr("isdigit", self._expr, {})
+
+    def islower(self) -> StringMethodExpr:
+        return StringMethodExpr("islower", self._expr, {})
+
+    def isupper(self) -> StringMethodExpr:
+        return StringMethodExpr("isupper", self._expr, {})
 
 
 class StringMethodExpr(Expr):
     __slots__ = ("column", "kwargs", "method")
 
-    def __init__(self, method: str, column: Expr, kwargs: dict) -> None:
+    method: str
+    column: Expr
+    kwargs: dict[str, Any]
+
+    def __init__(self, method: str, column: Expr, kwargs: dict[str, Any]) -> None:
         self.method = method
         self.column = column
         self.kwargs = kwargs
@@ -318,45 +377,117 @@ class StringMethodExpr(Expr):
 class DateExpr:
     __slots__ = ("_expr",)
 
+    _expr: Expr
+
     def __init__(self, expr: Expr) -> None:
         self._expr = expr
 
     @property
-    def year(self) -> Expr:
+    def year(self) -> DatePartExpr:
         return DatePartExpr("year", self._expr)
 
     @property
-    def month(self) -> Expr:
+    def month(self) -> DatePartExpr:
         return DatePartExpr("month", self._expr)
 
     @property
-    def day(self) -> Expr:
+    def day(self) -> DatePartExpr:
         return DatePartExpr("day", self._expr)
 
     @property
-    def hour(self) -> Expr:
+    def hour(self) -> DatePartExpr:
         return DatePartExpr("hour", self._expr)
 
     @property
-    def minute(self) -> Expr:
+    def minute(self) -> DatePartExpr:
         return DatePartExpr("minute", self._expr)
 
     @property
-    def dayofweek(self) -> Expr:
+    def second(self) -> DatePartExpr:
+        return DatePartExpr("second", self._expr)
+
+    @property
+    def microsecond(self) -> DatePartExpr:
+        return DatePartExpr("microsecond", self._expr)
+
+    @property
+    def nanosecond(self) -> DatePartExpr:
+        return DatePartExpr("nanosecond", self._expr)
+
+    @property
+    def dayofweek(self) -> DatePartExpr:
         return DatePartExpr("dayofweek", self._expr)
 
     @property
-    def quarter(self) -> Expr:
+    def quarter(self) -> DatePartExpr:
         return DatePartExpr("quarter", self._expr)
 
-    def strftime(self, fmt: str) -> Expr:
+    @property
+    def dayofyear(self) -> DatePartExpr:
+        return DatePartExpr("dayofyear", self._expr)
+
+    @property
+    def week(self) -> DatePartExpr:
+        return DatePartExpr("week", self._expr)
+
+    @property
+    def days_in_month(self) -> DatePartExpr:
+        return DatePartExpr("days_in_month", self._expr)
+
+    @property
+    def is_month_start(self) -> DatePartExpr:
+        return DatePartExpr("is_month_start", self._expr)
+
+    @property
+    def is_month_end(self) -> DatePartExpr:
+        return DatePartExpr("is_month_end", self._expr)
+
+    @property
+    def is_year_start(self) -> DatePartExpr:
+        return DatePartExpr("is_year_start", self._expr)
+
+    @property
+    def is_year_end(self) -> DatePartExpr:
+        return DatePartExpr("is_year_end", self._expr)
+
+    @property
+    def is_leap_year(self) -> DatePartExpr:
+        return DatePartExpr("is_leap_year", self._expr)
+
+    @property
+    def month_name(self) -> DatePartExpr:
+        return DatePartExpr("month_name", self._expr)
+
+    @property
+    def day_name(self) -> DatePartExpr:
+        return DatePartExpr("day_name", self._expr)
+
+    def normalize(self) -> DatePartExpr:
+        return DatePartExpr("normalize", self._expr)
+
+    def floor(self, freq: str) -> DatePartExpr:
+        return DatePartExpr("floor", self._expr, {"freq": freq})
+
+    def ceil(self, freq: str) -> DatePartExpr:
+        return DatePartExpr("ceil", self._expr, {"freq": freq})
+
+    def round(self, freq: str) -> DatePartExpr:
+        return DatePartExpr("round", self._expr, {"freq": freq})
+
+    def strftime(self, fmt: str) -> DatePartExpr:
         return DatePartExpr("strftime", self._expr, {"fmt": fmt})
 
 
 class DatePartExpr(Expr):
     __slots__ = ("column", "kwargs", "part")
 
-    def __init__(self, part: str, column: Expr, kwargs: dict | None = None) -> None:
+    part: str
+    column: Expr
+    kwargs: dict[str, Any]
+
+    def __init__(
+        self, part: str, column: Expr, kwargs: dict[str, Any] | None = None
+    ) -> None:
         self.part = part
         self.column = column
         self.kwargs = kwargs or {}
@@ -367,7 +498,7 @@ class DatePartExpr(Expr):
 
 
 class WhenExpr(Expr):
-    __slots__ = ("condition", "then_value", "else_value")
+    __slots__ = ("condition", "else_value", "then_value")
 
     def __init__(
         self, condition: Expr, then_value: Expr, else_value: Expr | None = None
