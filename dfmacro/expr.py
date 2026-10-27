@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from ._generated_methods import ACCESSOR_METHODS
+
 
 class Expr:
     __slots__ = ()
@@ -158,6 +160,21 @@ class Expr:
     def dt(self) -> DateExpr:
         return DateExpr(self)
 
+    @property
+    def cat(self) -> CatExpr:
+        return CatExpr(self)
+
+    @property
+    def num(self) -> NumExpr:
+        return NumExpr(self)
+
+    @property
+    def list(self) -> ListExpr:
+        return ListExpr(self)
+
+    @property
+    def struct(self) -> StructExpr:
+        return StructExpr(self)
 
 def _wrap(value: Any) -> Expr | Literal:
     if isinstance(value, Expr):
@@ -253,6 +270,36 @@ class MathExpr(Expr):
         return f"{self.column!r}.{self.func}({args})"
 
 
+class AccessorExpr(Expr):
+    __slots__ = ("args", "column", "is_property", "kwargs", "method_name", "namespace")
+
+    def __init__(
+        self,
+        namespace: str,
+        method_name: str,
+        column: Expr,
+        args: tuple[Any, ...] = (),
+        kwargs: dict[str, Any] | None = None,
+        is_property: bool = False,
+    ) -> None:
+        self.namespace = namespace
+        self.method_name = method_name
+        self.column = column
+        self.args = args
+        self.kwargs = kwargs or {}
+        self.is_property = is_property
+
+    def __repr__(self) -> str:
+        if self.is_property:
+            return f"{self.column!r}.{self.namespace}.{self.method_name}"
+        args = [repr(value) for value in self.args]
+        args.extend(f"{key}={value!r}" for key, value in self.kwargs.items())
+        return (
+            f"{self.column!r}.{self.namespace}.{self.method_name}"
+            f"({', '.join(args)})"
+        )
+
+
 class StringExpr:
     __slots__ = ("_expr",)
 
@@ -260,6 +307,9 @@ class StringExpr:
 
     def __init__(self, expr: Expr) -> None:
         self._expr = expr
+
+    def __getattr__(self, name: str) -> Any:
+        raise AttributeError(name)
 
     def contains(self, pat: str, regex: bool = False) -> StringMethodExpr:
         return StringMethodExpr("contains", self._expr, {"pat": pat, "regex": regex})
@@ -357,17 +407,21 @@ class StringExpr:
         return StringMethodExpr("isupper", self._expr, {})
 
 
-class StringMethodExpr(Expr):
-    __slots__ = ("column", "kwargs", "method")
+class StringMethodExpr(AccessorExpr):
+    __slots__ = ()
 
-    method: str
-    column: Expr
-    kwargs: dict[str, Any]
+    def __init__(
+        self,
+        method: str,
+        column: Expr,
+        kwargs: dict[str, Any],
+        args: tuple[Any, ...] = (),
+    ) -> None:
+        super().__init__("str", method, column, args=args, kwargs=kwargs)
 
-    def __init__(self, method: str, column: Expr, kwargs: dict[str, Any]) -> None:
-        self.method = method
-        self.column = column
-        self.kwargs = kwargs
+    @property
+    def method(self) -> str:
+        return self.method_name
 
     def __repr__(self) -> str:
         args = ", ".join(f"{k}={v!r}" for k, v in self.kwargs.items())
@@ -381,6 +435,9 @@ class DateExpr:
 
     def __init__(self, expr: Expr) -> None:
         self._expr = expr
+
+    def __getattr__(self, name: str) -> Any:
+        raise AttributeError(name)
 
     @property
     def year(self) -> DatePartExpr:
@@ -478,23 +535,62 @@ class DateExpr:
         return DatePartExpr("strftime", self._expr, {"fmt": fmt})
 
 
-class DatePartExpr(Expr):
-    __slots__ = ("column", "kwargs", "part")
-
-    part: str
-    column: Expr
-    kwargs: dict[str, Any]
+class DatePartExpr(AccessorExpr):
+    __slots__ = ()
 
     def __init__(
-        self, part: str, column: Expr, kwargs: dict[str, Any] | None = None
+        self,
+        part: str,
+        column: Expr,
+        kwargs: dict[str, Any] | None = None,
+        is_property: bool | None = None,
     ) -> None:
-        self.part = part
-        self.column = column
-        self.kwargs = kwargs or {}
+        super().__init__(
+            "dt",
+            part,
+            column,
+            kwargs=kwargs,
+            is_property=(not bool(kwargs)) if is_property is None else is_property,
+        )
+
+    @property
+    def part(self) -> str:
+        return self.method_name
 
     def __repr__(self) -> str:
         args = ", ".join(f"{k}={v!r}" for k, v in self.kwargs.items())
         return f"{self.column!r}.dt.{self.part}({args})"
+
+
+AccessorMethodExpr = AccessorExpr
+
+
+class CatExpr:
+    __slots__ = ("_expr",)
+
+    def __init__(self, expr: Expr) -> None:
+        self._expr = expr
+
+
+class NumExpr:
+    __slots__ = ("_expr",)
+
+    def __init__(self, expr: Expr) -> None:
+        self._expr = expr
+
+
+class ListExpr:
+    __slots__ = ("_expr",)
+
+    def __init__(self, expr: Expr) -> None:
+        self._expr = expr
+
+
+class StructExpr:
+    __slots__ = ("_expr",)
+
+    def __init__(self, expr: Expr) -> None:
+        self._expr = expr
 
 
 class WhenExpr(Expr):
@@ -571,6 +667,23 @@ def structural_eq(a: object, b: object) -> bool:
             )
             and cast(DatePartExpr, a).kwargs == cast(DatePartExpr, b).kwargs
         )
+    if isinstance(a, AccessorMethodExpr):
+        return (
+            cast(AccessorMethodExpr, a).namespace
+            == cast(AccessorMethodExpr, b).namespace
+            and cast(AccessorMethodExpr, a).method_name
+            == cast(AccessorMethodExpr, b).method_name
+            and structural_eq(
+                cast(AccessorMethodExpr, a).column,
+                cast(AccessorMethodExpr, b).column,
+            )
+            and cast(AccessorMethodExpr, a).args
+            == cast(AccessorMethodExpr, b).args
+            and cast(AccessorMethodExpr, a).kwargs
+            == cast(AccessorMethodExpr, b).kwargs
+            and cast(AccessorMethodExpr, a).is_property
+            == cast(AccessorMethodExpr, b).is_property
+        )
     if isinstance(a, WhenExpr):
         return (
             structural_eq(cast(WhenExpr, a).condition, cast(WhenExpr, b).condition)
@@ -592,3 +705,153 @@ def structural_eq(a: object, b: object) -> bool:
             )
         )
     return a is b
+
+
+_ACCESSOR_CLASSES = {
+    "str": StringExpr,
+    "dt": DateExpr,
+    "cat": CatExpr,
+    "num": NumExpr,
+    "list": ListExpr,
+    "struct": StructExpr,
+}
+
+_POSITIONAL_ARGUMENTS = {
+    "extractall": ("pat",),
+    "get": ("i",),
+    "repeat": ("repeats",),
+    "contains": ("pat", "regex"),
+    "startswith": ("pat",),
+    "endswith": ("pat",),
+    "strip": ("chars",),
+    "lstrip": ("chars",),
+    "rstrip": ("chars",),
+    "replace": ("pat", "repl", "regex"),
+    "split": ("pat",),
+    "slice": ("start", "length"),
+    "pad": ("width", "side", "fillchar"),
+    "zfill": ("width",),
+    "match": ("pat",),
+    "extract": ("pat", "group"),
+    "count": ("pat",),
+    "fullmatch": ("pat",),
+    "strftime": ("fmt",),
+    "floor": ("freq",),
+    "ceil": ("freq",),
+    "round": ("freq",),
+    "normalize": (),
+    "as_unit": ("unit",),
+    "to_period": ("freq",),
+    "tz_localize": ("tz",),
+    "tz_convert": ("tz",),
+}
+
+_ACCESSOR_DEFAULTS = {
+    ("str", "contains"): {"regex": False},
+    ("str", "strip"): {"chars": None},
+    ("str", "lstrip"): {"chars": None},
+    ("str", "rstrip"): {"chars": None},
+    ("str", "replace"): {"regex": False},
+    ("str", "slice"): {"start": None, "length": None},
+    ("str", "extract"): {"group": 1},
+    ("str", "pad"): {"side": "left", "fillchar": " "},
+}
+
+
+def _make_accessor_expression(
+    namespace: str,
+    method_name: str,
+    column: Expr,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    is_property: bool,
+) -> AccessorExpr:
+    if is_property and (args or kwargs):
+        raise TypeError(
+            f"Accessor property {namespace}.{method_name} does not accept arguments."
+        )
+
+    if namespace == "str":
+        argument_names = _POSITIONAL_ARGUMENTS.get(method_name, ())
+        if len(args) > len(argument_names):
+            raise TypeError(
+                f"{namespace}.{method_name} accepts at most "
+                f"{len(argument_names)} positional arguments."
+            )
+        normalized_kwargs = dict(zip(argument_names, args))
+        overlap = normalized_kwargs.keys() & kwargs.keys()
+        if overlap:
+            duplicated = ", ".join(sorted(overlap))
+            raise TypeError(f"Multiple values for argument(s): {duplicated}.")
+        normalized_kwargs.update(kwargs)
+        for key, value in _ACCESSOR_DEFAULTS.get((namespace, method_name), {}).items():
+            normalized_kwargs.setdefault(key, value)
+        if method_name == "pad":
+            if normalized_kwargs.get("side") not in {"left", "right", "both"}:
+                raise ValueError("side must be 'left', 'right', or 'both'.")
+            if len(normalized_kwargs.get("fillchar", " ")) != 1:
+                raise ValueError("fillchar must be exactly one character.")
+        if method_name == "extract" and normalized_kwargs.get("group", 1) < 1:
+            raise ValueError("group must be a positive, 1-based capture index.")
+        return StringMethodExpr(method_name, column, normalized_kwargs)
+
+    if namespace == "dt":
+        argument_names = _POSITIONAL_ARGUMENTS.get(method_name, ())
+        if len(args) > len(argument_names):
+            raise TypeError(
+                f"{namespace}.{method_name} accepts at most "
+                f"{len(argument_names)} positional arguments."
+            )
+        normalized_kwargs = dict(zip(argument_names, args))
+        overlap = normalized_kwargs.keys() & kwargs.keys()
+        if overlap:
+            duplicated = ", ".join(sorted(overlap))
+            raise TypeError(f"Multiple values for argument(s): {duplicated}.")
+        normalized_kwargs.update(kwargs)
+        return DatePartExpr(
+            method_name,
+            column,
+            normalized_kwargs,
+            is_property=is_property,
+        )
+
+    return AccessorExpr(
+        namespace,
+        method_name,
+        column,
+        args=args,
+        kwargs=kwargs,
+        is_property=is_property,
+    )
+
+
+def _install_accessor_method(
+    namespace: str, method_name: str, is_property: bool
+) -> None:
+    accessor_class = _ACCESSOR_CLASSES[namespace]
+
+    if is_property:
+        def get_property(self: Any) -> AccessorExpr:
+            return _make_accessor_expression(
+                namespace, method_name, self._expr, (), {}, True
+            )
+
+        setattr(accessor_class, method_name, property(get_property))
+        return
+
+    def accessor_method(self: Any, *args: Any, **kwargs: Any) -> AccessorExpr:
+        return _make_accessor_expression(
+            namespace, method_name, self._expr, args, kwargs, False
+        )
+
+    accessor_method.__name__ = method_name
+    accessor_method.__qualname__ = f"{accessor_class.__name__}.{method_name}"
+    setattr(accessor_class, method_name, accessor_method)
+
+
+for (_namespace, _method_name), _method_spec in ACCESSOR_METHODS.items():
+    _install_accessor_method(
+        _namespace,
+        _method_name,
+        _method_spec["property"],
+    )

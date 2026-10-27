@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import math
-import sys
 from collections.abc import Callable, Iterable
 from typing import Any
 
 from .compiler import _is_dask_dataframe, compile_expr
-from .expr import AggExpr, ColumnExpr, Expr
+from .expr import AggExpr, Expr
 
 
 def _is_pandas(obj: Any) -> bool:
@@ -246,13 +245,6 @@ class DF:
                     else:
                         exprs.append(pl.lit(expr).alias(col_name))
             new_df = self._df.with_columns(exprs)
-        frame = sys._getframe(1)
-        from .enable import _register_dynamic_name
-
-        for col_name in kwargs.keys():
-            if col_name not in frame.f_globals:
-                frame.f_globals[col_name] = ColumnExpr(col_name)
-                _register_dynamic_name(frame, col_name)
         return DF(new_df)
 
     def where(self, cond: Any, other: Any = None) -> DF:

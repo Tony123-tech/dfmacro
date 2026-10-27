@@ -1,143 +1,73 @@
-"""The @enable decorator: inject column names and bind DF wrapper."""
+"""The @enable decorator for source-based DataFrame expression rewriting."""
 
 from __future__ import annotations
 
-import builtins
-import dis
-import sys
-from typing import Any, Callable, TypeVar
+import functools
+import inspect
+from collections.abc import Callable
+from typing import Any, TypeVar, cast
 
-from .ast_rewriter import rewrite_function
 from .df_wrapper import DF
-from .expr import ColumnExpr
-from .injection import get_strategy, inject_or_raise
+from .dynamic import compile_dynamic
 
 F = TypeVar("F", bound=Callable[..., Any])
-
-_BUILTIN_NAMES = frozenset(dir(builtins))
-_DF_NAMES = ("df", "data")
-
-# Global registry to track dynamically added column names per frame.
-_DYNAMIC_NAMES: dict[int, list[str]] = {}
-
-# 🔥 Toggle this to True to use the new AST approach
-USE_AST = True
+_DF_NAMES = ("df", "data", "frame", "dataframe")
 
 
-def _register_dynamic_name(frame: Any, name: str) -> None:
-    frame_id = id(frame)
-    if frame_id not in _DYNAMIC_NAMES:
-        _DYNAMIC_NAMES[frame_id] = []
-    if name not in _DYNAMIC_NAMES[frame_id]:
-        _DYNAMIC_NAMES[frame_id].append(name)
-
-
-def _scan_load_global_names(func: Callable[..., Any]) -> set[str]:
-    names: set[str] = set()
-    for instr in dis.get_instructions(func):
-        if instr.opname in ("LOAD_GLOBAL", "LOAD_NAME"):
-            arg = instr.argval
-            if (
-                isinstance(arg, str)
-                and arg not in _BUILTIN_NAMES
-                and not arg.isdigit()
-                and not arg.startswith("_")
-            ):
-                names.add(arg)
-    return names
+def _get_frame_name(func: Callable[..., Any], df: Any) -> str:
+    signature = inspect.signature(func)
+    parameters = signature.parameters
+    for name in _DF_NAMES:
+        if name in parameters:
+            return name
+    for name, value in func.__globals__.items():
+        if value is df:
+            return name
+    for name in _DF_NAMES:
+        if name in func.__code__.co_freevars:
+            return name
+    return "df"
 
 
 def enable(df: Any) -> Callable[[F], F]:
-    wrapped = DF(df)
+    """Decorate a function so bare DataFrame column names become expressions."""
+    wrapped = df if isinstance(df, DF) else DF(df)
+    columns = list(wrapped.columns)
 
     def decorator(func: F) -> F:
-        # ---------------------------------------------------------
-        # NEW: AST Rewriting Path
-        # ---------------------------------------------------------
-        if USE_AST:
-            try:
-                # Rewrite the function using AST
-                new_func = rewrite_function(func)
+        frame_name = _get_frame_name(func, df)
+        generated = compile_dynamic(
+            func,
+            "__dfmacro_columns__",
+            columns,
+            frame_name=frame_name,
+        )
+        signature = inspect.signature(func)
+        columns_argument = generated.__dfmacro_columns_argument__
+        frame_argument = generated.__dfmacro_frame_argument__
 
-                # Wrap the new function so that we still inject the DF wrapper
-                def ast_wrapper(*args: Any, **kwargs: Any) -> Any:
-                    # We need to replace the original df with our wrapped DF
-                    # in the arguments before calling the rewritten function
-                    import inspect
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            bound = signature.bind(*args, **kwargs)
+            if frame_name in bound.arguments:
+                bound.arguments[frame_name] = wrapped
+            call_kwargs = dict(bound.kwargs)
+            call_kwargs[columns_argument] = generated.__dfmacro_columns_factory__()
+            call_kwargs[frame_argument] = wrapped
+            return generated(*bound.args, **call_kwargs)
 
-                    sig = inspect.signature(new_func)
-                    bound = sig.bind(*args, **kwargs)
+        if inspect.iscoroutinefunction(func):
+            async def async_invoke(*args: Any, **kwargs: Any) -> Any:
+                bound = signature.bind(*args, **kwargs)
+                if frame_name in bound.arguments:
+                    bound.arguments[frame_name] = wrapped
+                call_kwargs = dict(bound.kwargs)
+                call_kwargs[columns_argument] = generated.__dfmacro_columns_factory__()
+                call_kwargs[frame_argument] = wrapped
+                return await generated(*bound.args, **call_kwargs)
 
-                    for df_name in _DF_NAMES:
-                        if df_name in bound.arguments:
-                            bound.arguments[df_name] = wrapped
-
-                    return new_func(*bound.args, **bound.kwargs)
-
-                return ast_wrapper  # type: ignore[return-value]
-            except Exception as e:
-                print(
-                    f"[dfmacro] AST rewrite failed ({e}), falling back to sys.settrace."
-                )
-                # Fall through to the old method if AST fails
-
-        # ---------------------------------------------------------
-        # OLD: sys.settrace Path (Fallback)
-        # ---------------------------------------------------------
-        strategy = get_strategy()
-        loaded_names = _scan_load_global_names(func)
-
-        freevars = func.__code__.co_freevars
-        closure = func.__closure__ or ()
-
-        for name, cell in zip(freevars, closure):
-            if name in _DF_NAMES:
-                cell.cell_contents = wrapped
-
-        def tracer(frame: Any, event: str, arg: Any) -> Any:
-            if event == "call" and frame.f_code is func.__code__:
-                local_map: dict[str, Any] = {}
-
-                existing = set(frame.f_globals) | set(frame.f_builtins)
-                for name in loaded_names:
-                    if name in existing:
-                        continue
-                    local_map[name] = ColumnExpr(name)
-
-                for df_name in _DF_NAMES:
-                    local_map[df_name] = wrapped
-
-                if local_map:
-                    inject_or_raise(strategy, frame, local_map)
-
-                return _make_local_tracer(strategy, frame, list(local_map))
-            return tracer
-
-        def _make_local_tracer(
-            strategy: Any, target_frame: Any, injected_names: list[str]
-        ) -> Any:
-            def local_tracer(frame: Any, event: str, arg: Any) -> Any:
-                if frame is target_frame and event in ("return", "exception"):
-                    if injected_names:
-                        strategy.cleanup(frame, injected_names)
-
-                    dynamic = _DYNAMIC_NAMES.pop(id(target_frame), [])
-                    for name in dynamic:
-                        frame.f_globals.pop(name, None)
-
-                return local_tracer
-
-            return local_tracer
-
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            old_trace = sys.gettrace()
-            sys.settrace(tracer)
-            try:
-                return func(*args, **kwargs)
-            finally:
-                sys.settrace(old_trace)
-                _DYNAMIC_NAMES.pop(id(sys._getframe(1)), None)
-
-        return wrapper  # type: ignore[return-value]
+            result = functools.wraps(func)(async_invoke)
+        else:
+            result = functools.wraps(func)(invoke)
+        return cast(F, result)
 
     return decorator

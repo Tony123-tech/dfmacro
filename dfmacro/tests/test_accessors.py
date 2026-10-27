@@ -9,9 +9,11 @@ import pytest
 
 pl = pytest.importorskip("polars")
 
-from dfmacro.compiler import compile_expr
+from dfmacro.compiler import CompileError, compile_expr
 from dfmacro import enable
 from dfmacro.expr import (
+    AccessorExpr,
+    AccessorMethodExpr,
     ColumnExpr,
     DatePartExpr,
     StringMethodExpr,
@@ -237,6 +239,101 @@ def test_accessor_proxies_and_nodes_use_slots():
     assert not hasattr(date, "__dict__")
     assert not hasattr(text.contains("x"), "__dict__")
     assert not hasattr(date.year, "__dict__")
+
+
+def test_generated_accessor_methods_dispatch_across_backends():
+    from dfmacro._generated_methods import ACCESSOR_METHODS
+
+    expression = ColumnExpr("text").str.capitalize()
+    pandas = pd.DataFrame({"text": ["hello", "world"]})
+    polars = pl.DataFrame({"text": ["hello", "world"]})
+
+    assert isinstance(expression, AccessorMethodExpr)
+    assert len(ACCESSOR_METHODS) >= 150
+    assert _evaluate(pandas, expression) == ["Hello", "World"]
+    assert _evaluate(polars, expression) == ["Hello", "World"]
+
+
+def test_generated_accessor_capability_errors_are_explicit():
+    from dfmacro.compiler.accessor import accessor_capabilities
+
+    expression = ColumnExpr("text").str.extractall("(.)")
+    frame = pl.DataFrame({"text": ["abc"]})
+
+    assert accessor_capabilities("str", "extractall") == {
+        "pandas": True,
+        "polars": False,
+    }
+    with pytest.raises(CompileError, match="not supported by the polars backend"):
+        _evaluate(frame, expression)
+
+
+def test_generated_numeric_accessor_dispatch():
+    pandas = pd.DataFrame({"value": [-1.6, 2.2]})
+    polars = pl.DataFrame({"value": [-1.6, 2.2]})
+    expression = ColumnExpr("value").num.round(0)
+
+    assert _evaluate(pandas, expression) == [-2.0, 2.0]
+    assert _evaluate(polars, expression) == [-2.0, 2.0]
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "expected", "polars_supported"),
+    [
+        ("capitalize", (), ["Alpha", "Beta"], True),
+        ("casefold", (), ["alpha", "beta"], True),
+        ("get", (0,), ["a", "b"], False),
+    ],
+)
+def test_dynamic_string_accessor_injection(
+    string_frames, method, args, expected, polars_supported
+):
+    pandas_frame, polars_frame = string_frames
+    pandas_frame = pandas_frame.iloc[:2].copy()
+    polars_frame = polars_frame.head(2)
+    pandas_frame["text"] = ["alpha", "beta"]
+    polars_frame = polars_frame.with_columns(pl.Series("text", ["alpha", "beta"]))
+
+    expression = getattr(ColumnExpr("text").str, method)(*args)
+    assert isinstance(expression, AccessorExpr)
+    assert _evaluate(pandas_frame, expression) == expected
+    if polars_supported:
+        assert _evaluate(polars_frame, expression) == expected
+    else:
+        with pytest.raises(
+            CompileError, match="not supported by the polars backend"
+        ):
+            _evaluate(polars_frame, expression)
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "polars_supported"),
+    [
+        ("date", (), True),
+        ("to_period", ("D",), False),
+        ("isocalendar", (), False),
+    ],
+)
+def test_dynamic_datetime_accessor_injection(
+    datetime_frames, method, args, polars_supported
+):
+    pandas_frame, polars_frame = datetime_frames
+    accessor = ColumnExpr("date").dt
+    attribute = getattr(accessor, method)
+    expression = attribute(*args) if callable(attribute) else attribute
+
+    assert isinstance(expression, AccessorExpr)
+    pandas_result = compile_expr(expression, pandas_frame)
+    assert len(pandas_result) == len(pandas_frame)
+
+    if polars_supported:
+        polars_result = _evaluate(polars_frame, expression)
+        assert len(polars_result) == len(polars_frame)
+    else:
+        with pytest.raises(
+            CompileError, match="not supported by the polars backend"
+        ):
+            compile_expr(expression, polars_frame)
 
 
 def test_expanded_accessors_work_with_enable():

@@ -64,3 +64,18 @@ def test_magic_mutate(shell):
     out = shell.user_ns["result"]
     assert "double" in out.columns
     assert list(out.raw["double"]) == [100, 300, 400, 160]
+
+
+def test_magic_rewrites_functions_in_cell_source(shell):
+    magic = DfmacroMagics(shell)
+    cell = """
+def query(df):
+    threshold = 100
+    return df[price > threshold]
+
+result = query(df)
+"""
+
+    magic.dfmacro("df", cell)
+
+    assert shell.user_ns["result"].raw["price"].tolist() == [150, 200]

@@ -36,6 +36,7 @@ except ImportError:
 
 
 from .df_wrapper import DF
+from .dynamic import compile_dynamic_cell
 
 
 @magics_class
@@ -57,50 +58,19 @@ class DfmacroMagics(Magics):
 
         df = user_ns[df_name]
 
-        # Wrap the df and compile the cell with our enable tracer
-        wrapped = DF(df)
+        exec_namespace = dict(user_ns)
+        exec_namespace[df_name] = DF(df)
+        code, exec_namespace, columns_name = compile_dynamic_cell(
+            cell,
+            df_name,
+            list(df.columns),
+            exec_namespace,
+        )
+        exec(code, exec_namespace, exec_namespace)
 
-        # We use the same closure trick: create a function and inject the wrapped df.
-        # But since this is a cell, we need to execute it with the tracer active.
-        import sys
-
-        old_trace = sys.gettrace()
-
-        def tracer(frame, event, arg):
-            if event == "call":
-                # Only inject if it's the exec frame for our cell
-                if frame.f_code.co_filename == "<dfmacro-magic>":
-                    from .expr import ColumnExpr
-                    from .injection import get_strategy, inject_or_raise
-
-                    strategy = get_strategy()
-                    local_map = {}
-                    # Inject all df columns
-                    for col in df.columns:
-                        local_map[col] = ColumnExpr(col)
-
-                    local_map[df_name] = wrapped
-
-                    inject_or_raise(strategy, frame, local_map)
-                    return _make_local_tracer(strategy, frame, list(local_map))
-            return tracer
-
-        def _make_local_tracer(strategy, target_frame, injected_names):
-            def local_tracer(frame, event, arg):
-                if frame is target_frame and event in ("return", "exception"):
-                    strategy.cleanup(frame, injected_names)
-                return local_tracer
-
-            return local_tracer
-
-        sys.settrace(tracer)
-        try:
-            # Execute the cell code in the user's namespace
-            # We wrap it in a code object with the proper filename for tracing
-            code = compile(cell, "<dfmacro-magic>", "exec")
-            exec(code, user_ns)
-        finally:
-            sys.settrace(old_trace)
+        for name, value in exec_namespace.items():
+            if name not in {"__builtins__", columns_name, df_name}:
+                user_ns[name] = value
 
 
 def load_ipython_extension(ipython: Any) -> None:

@@ -29,4 +29,11 @@ htmlcov/
 # IDE
 .idea/
 .vscode/
-*.applescript
+
+# Rust
+target/
+*.so
+
+# C
+build/
+*.o

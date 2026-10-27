@@ -1,7 +1,8 @@
-"""AST rewriter for dfmacro.
+"""Legacy AST rewriter for dfmacro expressions.
 
-This module replaces the sys.settrace approach by rewriting the user's
-function source code at definition time. It transforms bare names like:
+The active decorator implementation lives in :mod:`dfmacro.dynamic`. This
+module remains available for callers using the original expression-tree
+rewriter. It transforms bare names like:
 
     df[price > 100]
 

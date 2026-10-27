@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+from concurrent.futures import ThreadPoolExecutor
 
 from dfmacro import enable, when
 from dfmacro.compiler import CompileError
+from dfmacro.expr import ColumnExpr
 
 
 @pytest.fixture
@@ -83,7 +85,7 @@ def test_globals_cleaned_after_exception(df):
     assert "price" not in globals()
 
 
-def test_nested_function_does_not_see_injection(df):
+def test_nested_function_column_name_is_rewritten(df):
     @enable(df)
     def outer():
         def inner():
@@ -92,8 +94,9 @@ def test_nested_function_does_not_see_injection(df):
         return inner
 
     inner = outer()
-    with pytest.raises(NameError):
-        inner()
+    result = inner()
+    assert isinstance(result, ColumnExpr)
+    assert result.name == "price"
 
 
 def test_filter_with_arithmetic(df):
@@ -292,3 +295,71 @@ def test_lazy_evaluation(df):
     assert list(out.columns) == ["category", "double_price"]
     assert len(out) == 2
     assert list(out.raw["double_price"]) == [300, 400]
+
+
+def test_function_parameters_and_locals_are_not_rewritten(df):
+    @enable(df)
+    def query(df, price):
+        local_price = price
+        return local_price
+
+    assert query(df, 100) == 100
+
+
+def test_concurrent_decorated_calls_do_not_share_dataframe_state():
+    first = pd.DataFrame({"value": [1, 3, 5]})
+    second = pd.DataFrame({"value": [2, 4, 6]})
+
+    def query(df):
+        return df[value > 3]  # noqa: F821
+
+    first_query = enable(first)(query)
+    second_query = enable(second)(query)
+
+    def run(item):
+        function, frame = item
+        return function(frame).raw["value"].tolist()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(
+            executor.map(
+                run,
+                [(first_query, first), (second_query, second)] * 20,
+            )
+        )
+
+    assert results[::2] == [[5]] * 20
+    assert results[1::2] == [[4, 6]] * 20
+
+
+def test_source_unavailable_has_jupyter_guidance(monkeypatch):
+    import dfmacro.dynamic as dynamic
+
+    frame = pd.DataFrame({"value": [1]})
+
+    def query():
+        return df[value > 0]  # noqa: F821
+
+    def unavailable_source(_func):
+        raise OSError("source unavailable")
+
+    monkeypatch.setattr(dynamic.inspect, "getsource", unavailable_source)
+    with pytest.raises(RuntimeError, match="dfmacro requires source code") as error:
+        enable(frame)(query)
+
+    assert "use the `%dfmacro` magic" in str(error.value)
+
+
+def test_generated_function_uses_original_globals(df):
+    from dfmacro.dynamic import compile_dynamic
+
+    def query():
+        return df[price > 100]
+
+    generated = compile_dynamic(
+        query,
+        "__dfmacro_columns__",
+        list(df.columns),
+        frame_name="df",
+    )
+    assert generated.__globals__ is query.__globals__
