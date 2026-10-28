@@ -32,8 +32,11 @@ htmlcov/
 
 # Rust
 target/
+src_rust/target/
 *.so
 
 # C
 build/
+src_c/build/
 *.o
+*.dylib
