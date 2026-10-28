@@ -9,6 +9,8 @@ import pandas as pd
 import pytest
 
 from dfmacro import DF, enable
+from dfmacro.expr import ColumnExpr
+import dfmacro.df_wrapper as df_wrapper
 
 
 @pytest.fixture
@@ -33,6 +35,56 @@ def test_where_keeps_matching(df):
 
     out = result(df)
     assert list(out.raw["price"]) == [0, 150, 200, 0]
+
+
+def test_expression_filter_is_cached(df, monkeypatch):
+    wrapper = DF(df)
+    expression = ColumnExpr("price") > 100
+    compile_calls = 0
+    original_compile_expr = df_wrapper.compile_expr
+
+    def counting_compile_expr(expr, frame):
+        nonlocal compile_calls
+        compile_calls += 1
+        return original_compile_expr(expr, frame)
+
+    monkeypatch.setattr(df_wrapper, "compile_expr", counting_compile_expr)
+
+    first = wrapper[expression]
+    second = wrapper[ColumnExpr("price") > 100]
+
+    assert first is second
+    assert compile_calls == 1
+    assert len(wrapper._cache) == 1
+
+
+def test_unserializable_expression_bypasses_cache(df, monkeypatch):
+    wrapper = DF(df)
+    expression = ColumnExpr("price") > 100
+
+    def fail_pickle(*args, **kwargs):
+        raise TypeError("value cannot be serialized")
+
+    monkeypatch.setattr(df_wrapper.pickle, "dumps", fail_pickle)
+
+    first = wrapper[expression]
+    second = wrapper[expression]
+
+    assert first is not second
+    assert first.raw.equals(second.raw)
+    assert wrapper._cache == {}
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_prices"),
+    [(True, [50, 150, 200, 80]), (False, [])],
+)
+def test_constant_predicates_filter_all_or_no_rows(df, value, expected_prices):
+    from dfmacro.expr import Literal
+
+    result = DF(df)[Literal(value)]
+
+    assert result.raw["price"].tolist() == expected_prices
 
 
 def test_mask_replaces_matching(df):

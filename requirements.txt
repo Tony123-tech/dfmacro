@@ -1,0 +1,5 @@
+dfmacro
+gradio
+pandas
+polars
+duckdb

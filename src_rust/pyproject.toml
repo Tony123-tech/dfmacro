@@ -3,7 +3,7 @@ requires = ["maturin>=1.15,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "src_rust"
+name = "dfmacro-rs"
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Rust",
@@ -11,3 +11,6 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dynamic = ["version"]
+
+[tool.maturin]
+module-name = "dfmacro_rs"

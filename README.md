@@ -93,23 +93,86 @@ def matching_items():
 
 ### SQL generation
 
-Build an expression directly and compile supported expressions to SQL:
+Compile an expression to a SQL fragment, or compile a `LazyDF` chain to a
+DuckDB-compatible query:
 
 ```python
-from dfmacro import ColumnExpr, compile_to_sql
+from dfmacro import ColumnExpr, DF, compile_to_sql
 
 predicate = ColumnExpr("price") > 100
-sql_where = compile_to_sql(predicate)
-print(sql_where)  # ("price" > 100)
+print(compile_to_sql(predicate))
+
+plan = (
+    DF(df).lazy()[predicate]
+    .select(ColumnExpr("category"), ColumnExpr("price"))
+    .order_by(ColumnExpr("price"))
+    .head(10)
+)
+sql_query = compile_to_sql(plan, table_name="sales")
 ```
 
-`compile_to_sql` generates a SQL fragment; it does not execute the query.
+Pipeline SQL treats its source table names (`df` for a single source, `df1` and
+`df2` for a default two-source join) as existing SQL tables and does not
+execute the query. Pass `table_name` to override the left-hand source. SQL
+`tail()` requires a preceding `order_by()` because relational tables have no
+intrinsic row order.
+
+### Advanced Lazy Pipelines
+
+Lazy plans can join independently built DataFrame branches. Each branch keeps
+its own operations until collection:
+
+```python
+from dfmacro import DF
+from dfmacro.expr import ColumnExpr
+
+products = DF(products_frame).lazy()
+inventory = DF(inventory_frame).lazy()
+
+available_products = (
+    products
+    .join(inventory, on="product_id", how="inner")
+    .filter(ColumnExpr("stock") > 0)
+    .collect()
+)
+```
+
+The join is represented as a DAG node that retains the right-hand lazy plan.
+Pandas collection executes the join with `DataFrame.merge`; the SQL compiler
+generates aliased join inputs (for example `df1` and `df2`) and qualified join
+keys. For SQL execution, register the input frames under the generated table
+names or compile branches using an explicit table name where appropriate.
+
+## Query optimization
+
+Expression compilation folds safe constant subexpressions before evaluation.
+Lazy plans also push filters ahead of independent, row-local mutations when
+that transformation preserves semantics. Aggregations, window operations,
+column replacements, and other unsafe reorderings are left in their original
+order. Lazy SQL compilation applies the same conservative optimization before
+building the query. For example, a filter that does not depend on a newly
+mutated column can run before that mutation, reducing the rows processed by
+later operations.
+
+## Gradio Demo
+
+Install the demo requirements and launch the app from the repository root:
+
+```bash
+pip install -r requirements.txt
+python app.py
+```
+
+The app compares Pandas, Polars, and DuckDB filtering over 10,000 sample rows.
+Its query input accepts a validated expression subset; arbitrary Python source
+is rejected rather than executed.
 
 ## Extreme Performance: C & Rust Engines
 
 `dfmacro` is built for scale. Beyond standard Pandas and Polars backends, it features optional extensions that bypass Python's GIL and utilize multi-core parallelism.
 
 - **Rust Engine (`dfmacro_rs`)**: Powered by `Rayon` and `PyO3`, the Rust engine handles heavy numeric operations, multi-core filtering, string regex matching, and aggregations at native speed. It releases the GIL using `py.allow_threads()` to prevent bottlenecking.
+- Numeric Pandas kernels can pass data to Rust through Arrow's zero-copy C Data Interface, avoiding an intermediate NumPy conversion. Constructing the Arrow table from Pandas may itself require conversion; the zero-copy boundary is the Arrow-to-Rust handoff. This path is optional; when PyArrow or the compiled Rust extension is unavailable or cannot handle a dtype, Pandas remains the fallback.
 - **C Engine (`dfmacro_c`)**: A true **Zero-Copy** extension. Instead of allocating new boolean masks, it directly scans memory pointers to return filtered indices instantly.
 
 ### Benchmark (50M Rows)
@@ -121,24 +184,30 @@ print(sql_where)  # ("price" > 100)
 
 ## Installation
 
-The package declares backend integrations as optional extras. Install the
-backend(s) you plan to use:
+The standard installation includes Pandas:
 
 ```bash
-pip install 'dfmacro[pandas]'
+pip install dfmacro
+```
+
+Install optional backends as needed:
+
+```bash
 pip install 'dfmacro[polars]'
 pip install 'dfmacro[dask]'
 pip install 'dfmacro[duckdb]'
+pip install 'dfmacro[arrow]'
 ```
 
-Install multiple extras together when needed:
+Install multiple backends or the optional Rust extension together:
 
 ```bash
-pip install 'dfmacro[pandas,polars,dask,duckdb]'
+pip install 'dfmacro[polars,dask,duckdb,rust]'
 ```
 
-The `pandas` extra installs Pandas; the `polars`, `dask`, and `duckdb` extras
-install their corresponding optional integrations.
+The `polars`, `dask`, `duckdb`, and `arrow` extras install their corresponding
+optional integrations. The `rust` extra installs the separately distributed
+`dfmacro-rs` extension. PyArrow is used for the optional Arrow handoff to Rust.
 
 ## Supported features
 
@@ -199,13 +268,12 @@ can vary by backend; see [Backend support](#backend-support).
 | --- | --- |
 | Pandas | Core DataFrame wrapper and expression compiler. Install with `dfmacro[pandas]`. |
 | Polars | Core DataFrame wrapper and expression compiler. Install with `dfmacro[polars]`. |
-| Dask DataFrame | Lazy expression filtering, selection, mutation, and Dask-native sorting. Install with `dfmacro[dask]`. |
+| Dask DataFrame | Lazy filtering, selection, mutation, joins, and groupby aggregation use Dask operations. Install with `dfmacro[dask]`. |
 | DuckDB | SQL generation is available through `compile_to_sql`; the optional DuckDB wrapper is available with `dfmacro[duckdb]`. |
 
-Dask expression evaluation reuses the Pandas compiler on each partition.
-Operations that require cross-partition coordination, such as groupby
-aggregation and joins, are not currently supported through the Dask `DF`
-wrapper.
+Dask expression filtering compiles expressions for each partition. Lazy joins
+and groupby aggregations use Dask's distributed merge and aggregation APIs.
+Other eager `DF` operations may be backend-specific.
 
 Some operations have backend-specific limitations:
 
@@ -216,6 +284,14 @@ Some operations have backend-specific limitations:
   `Datetime` column exists; otherwise pass `on=`.
 - Accessor methods are dispatched using configured backend paths. Methods
   without a path for the selected backend raise `CompileError`.
+- Lazy Polars pipelines are lowered to Polars `LazyFrame` expressions and
+  collected through Polars' native execution engine.
+- Retryable backend operations use exponential backoff; set retry behavior on
+  direct helper calls with `dfmacro.resilience.retry`.
+- Custom compilers can be registered with `register_backend`, and custom
+  accessor expressions with `register_accessor`.
+- `LazyDF.explain()` reports planned operations and basic column lineage;
+  `DF.explain()` reports the eager frame's columns and dtypes.
 
 ## Jupyter
 
@@ -285,15 +361,12 @@ python -m pytest -q
 
 ```bash
 # Build Rust extension
-cd src_rust
-maturin develop --release
-cd ..
-
-# Build C extension
-cd src_c
-python setup.py build_ext --inplace
-cd ..
+pip install '.[build]'
+maturin develop --manifest-path src_rust/Cargo.toml --release
 ```
+
+Tagged releases build the platform-independent Python wheel with
+`cibuildwheel` and the optional Rust wheels with `maturin`.
 Regenerate the accessor capability registry after changing
 [`generate_methods.py`](./generate_methods.py):
 

@@ -7,14 +7,16 @@ name = "dfmacro"
 version = "0.0.1"
 description = "Native Python syntax for DataFrame expressions"
 requires-python = ">=3.8"
-dependencies = []
+dependencies = ["pandas>=1.5"]
 
 [project.optional-dependencies]
-pandas = ["pandas>=1.5"]
 polars = ["polars>=0.19"]
 dask = ["dask[dataframe]>=2024.1"]
-test = ["pytest>=7"]
+test = ["pytest>=7", "pytest-cov>=4"]
 duckdb = ["duckdb>=1.0.0"]
+arrow = ["pyarrow>=14"]
+build = ["build>=1.2", "cibuildwheel>=2.21", "maturin>=1.7"]
+rust = ["dfmacro-rs==0.0.1"]
 
 [tool.setuptools.packages.find]
 include = ["dfmacro*"]

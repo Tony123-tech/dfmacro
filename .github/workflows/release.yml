@@ -1,0 +1,90 @@
+name: Build and publish wheels
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  python-wheel:
+    name: Build pure Python wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install wheel builder
+        run: python -m pip install --upgrade cibuildwheel
+      - name: Build platform-independent wheel with cibuildwheel
+        env:
+          CIBW_BUILD: "cp312-manylinux_x86_64"
+        run: python -m cibuildwheel --output-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+
+  rust-wheel:
+    name: Build Rust wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+          - os: macos-13
+            target: macos-x86_64
+          - os: macos-14
+            target: macos-arm64
+          - os: windows-latest
+            target: windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install maturin
+        run: python -m pip install --upgrade maturin
+      - name: Build manylinux Rust wheel
+        if: runner.os == 'Linux'
+        run: maturin build --release --manifest-path src_rust/Cargo.toml --out dist --compatibility manylinux2014
+      - name: Build Rust wheel
+        if: runner.os != 'Linux'
+        run: maturin build --release --manifest-path src_rust/Cargo.toml --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-wheel-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    name: Publish distributions
+    needs: [python-wheel, rust-wheel]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/dfmacro/
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: gh release create "$TAG_NAME" dist/* --generate-notes
+      - name: Publish wheels to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

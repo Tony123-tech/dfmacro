@@ -20,9 +20,11 @@ from ..expr import (
     AggExpr,
     BinaryExpr,
     ColumnExpr,
+    DatePartExpr,
     Expr,
     Literal,
     MathExpr,
+    StringMethodExpr,
     UnaryExpr,
     WhenExpr,
     WindowExpr,
@@ -48,9 +50,121 @@ _BINARY_OPS: dict[str, Callable[[Any, Any], Any]] = {
 _FLIP_OP = {">": "<", "<": ">", ">=": "<=", "<=": ">=", "==": "==", "!=": "!="}
 
 
+def _arrow_table_for_column(df: Any, column_name: str) -> Any | None:
+    """Create an optional Arrow view of one column for Rust acceleration.
+
+    Args:
+        df: Source Pandas DataFrame.
+        column_name: Unique column name to export.
+
+    Returns:
+        A PyArrow table when PyArrow and conversion are available; otherwise
+        ``None`` so the caller uses the Pandas implementation.
+    """
+    if not getattr(df.columns, "is_unique", False):
+        return None
+    try:
+        import pyarrow as pa
+
+        return pa.Table.from_pandas(df[[column_name]], preserve_index=False)
+    except (ImportError, TypeError, ValueError):
+        return None
+
+
+def execute_join(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    on: Any,
+    how: str = "inner",
+) -> pd.DataFrame:
+    """Execute a validated lazy join with Pandas.
+
+    Args:
+        left: Left input DataFrame.
+        right: Right input DataFrame.
+        on: Shared join key or keys.
+        how: Pandas merge strategy.
+
+    Returns:
+        The merged Pandas DataFrame.
+
+    Raises:
+        CompileError: If either input is not a Pandas DataFrame or keys are
+            missing from an input.
+        ValueError: If ``how`` is not supported.
+    """
+    if not isinstance(left, pd.DataFrame) or not isinstance(right, pd.DataFrame):
+        raise CompileError("Pandas lazy joins require two pandas DataFrames.")
+    keys = list(on) if isinstance(on, (list, tuple)) else [on]
+    if not keys or any(not isinstance(key, str) for key in keys):
+        raise CompileError("Pandas lazy joins require one or more string column names.")
+    missing_left = set(keys) - set(left.columns)
+    missing_right = set(keys) - set(right.columns)
+    if missing_left or missing_right:
+        missing = []
+        if missing_left:
+            missing.append(f"left: {sorted(missing_left)!r}")
+        if missing_right:
+            missing.append(f"right: {sorted(missing_right)!r}")
+        raise CompileError(f"Join key(s) missing from {'; '.join(missing)}.")
+    normalized_how = "outer" if how == "full" else how
+    if normalized_how not in {"inner", "left", "right", "outer"}:
+        raise CompileError(f"Unsupported Pandas join type: {how!r}.")
+    return left.merge(right, on=keys, how=normalized_how)
+
+
 def compile_expr(expr: Expr, df: Any) -> Any:
+    """Compile an expression tree to a Pandas value or Series.
+
+    Args:
+        expr: Expression node to compile.
+        df: Pandas DataFrame used to resolve column references.
+
+    Returns:
+        The computed scalar, NumPy value, or Pandas Series.
+
+    Raises:
+        CompileError: If the expression is invalid or unsupported by Pandas.
+    """
     if isinstance(expr, AccessorExpr):
         column = compile_expr(expr.column, df)
+        if isinstance(expr, DatePartExpr) or expr.namespace == "dt":
+            dtype = getattr(column, "dtype", None)
+            if not pd.api.types.is_datetime64_any_dtype(dtype):
+                column_name = (
+                    expr.column.name
+                    if isinstance(expr.column, ColumnExpr)
+                    else repr(expr.column)
+                )
+                available = ", ".join(
+                    f"{name}: {column_dtype}"
+                    for name, column_dtype in df.dtypes.items()
+                )
+                raise CompileError(
+                    f"Datetime accessor '.dt.{expr.method_name}' requires a "
+                    f"datetime64 column; {column_name!r} has dtype {dtype!r}. "
+                    f"Available columns and dtypes: {available}."
+                )
+        elif isinstance(expr, StringMethodExpr) or expr.namespace == "str":
+            dtype = getattr(column, "dtype", None)
+            if not (
+                pd.api.types.is_object_dtype(dtype)
+                or pd.api.types.is_string_dtype(dtype)
+            ):
+                column_name = (
+                    expr.column.name
+                    if isinstance(expr.column, ColumnExpr)
+                    else repr(expr.column)
+                )
+                available = ", ".join(
+                    f"{name}: {column_dtype}"
+                    for name, column_dtype in df.dtypes.items()
+                )
+                raise CompileError(
+                    f"String accessor '.str.{expr.method_name}' requires an "
+                    f"object or string column; {column_name!r} has dtype "
+                    f"{dtype!r}. Available columns and dtypes: {available}."
+                )
         return compile_accessor_method(expr, column, "pandas")
 
     if isinstance(expr, ColumnExpr):
@@ -78,19 +192,26 @@ def compile_expr(expr: Expr, df: Any) -> Any:
                 if isinstance(expr.left, ColumnExpr) and isinstance(
                     expr.right, Literal
                 ):
-                    arr = left.to_numpy(dtype=float)
-                    mask = dfmacro_rs.filter_compare(arr, expr.op, scalar=float(right))
-                    return pd.Series(mask, index=df.index)
+                    table = _arrow_table_for_column(df, expr.left.name)
+                    if table is not None and hasattr(dfmacro_rs, "filter_compare_arrow"):
+                        mask = dfmacro_rs.filter_compare_arrow(
+                            table, expr.left.name, expr.op, scalar=float(right)
+                        )
+                        return pd.Series(mask, index=df.index)
 
                 # Case 2: Literal OP Column
                 elif isinstance(expr.right, ColumnExpr) and isinstance(
                     expr.left, Literal
                 ):
-                    arr = right.to_numpy(dtype=float)
-                    mask = dfmacro_rs.filter_compare(
-                        arr, _FLIP_OP[expr.op], scalar=float(left)
-                    )
-                    return pd.Series(mask, index=df.index)
+                    table = _arrow_table_for_column(df, expr.right.name)
+                    if table is not None and hasattr(dfmacro_rs, "filter_compare_arrow"):
+                        mask = dfmacro_rs.filter_compare_arrow(
+                            table,
+                            expr.right.name,
+                            _FLIP_OP[expr.op],
+                            scalar=float(left),
+                        )
+                        return pd.Series(mask, index=df.index)
             except Exception:
                 pass  # Fallback to native Pandas if Rust fails
 
@@ -125,25 +246,17 @@ def compile_expr(expr: Expr, df: Any) -> Any:
         # --- RUST ACCELERATION FOR STATS ---
         if HAS_RUST:
             try:
-                if expr.func == "var":
-                    return dfmacro_rs.var_parallel(col.to_numpy(dtype=float))
-                elif expr.func == "std":
-                    return dfmacro_rs.std_parallel(col.to_numpy(dtype=float))
-                elif expr.func == "cumsum":
-                    return pd.Series(
-                        dfmacro_rs.cumsum_parallel(col.to_numpy(dtype=float)),
-                        index=df.index,
-                    )
-                elif expr.func == "cummax":
-                    return pd.Series(
-                        dfmacro_rs.cummax_parallel(col.to_numpy(dtype=float)),
-                        index=df.index,
-                    )
-                elif expr.func == "cummin":
-                    return pd.Series(
-                        dfmacro_rs.cummin_parallel(col.to_numpy(dtype=float)),
-                        index=df.index,
-                    )
+                if expr.func in {"var", "std", "cumsum", "cummax", "cummin"} and isinstance(
+                    expr.column, ColumnExpr
+                ):
+                    table = _arrow_table_for_column(df, expr.column.name)
+                    if table is not None and hasattr(dfmacro_rs, "numeric_window_arrow"):
+                        result = dfmacro_rs.numeric_window_arrow(
+                            table, expr.column.name, expr.func
+                        )
+                        if expr.func in {"var", "std"}:
+                            return result
+                        return pd.Series(result, index=df.index)
             except Exception:
                 pass  # Fallback to Pandas
 

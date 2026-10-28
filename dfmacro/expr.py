@@ -1,4 +1,9 @@
-"""Lazy expression tree for dfmacro."""
+"""Expression nodes and accessor proxies for dfmacro's lazy query DSL.
+
+Expressions are immutable-by-convention tree nodes. Operators and accessors
+construct new nodes; backend compilers later evaluate those nodes against a
+DataFrame.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,12 @@ from ._generated_methods import ACCESSOR_METHODS
 
 
 class Expr:
+    """Base class for lazy DataFrame expressions.
+
+    The overloaded operators build syntax trees rather than evaluating values.
+    Use ``&`` and ``|`` for boolean composition and parenthesize comparisons.
+    """
+
     __slots__ = ()
 
     def __bool__(self) -> bool:
@@ -190,9 +201,23 @@ def _check_precedence_trap(op: str, other: Any) -> None:
 
 
 class ColumnExpr(Expr):
+    """A reference to a DataFrame column.
+
+    Args:
+        name: The column's exact name.
+
+    Example:
+        ``ColumnExpr("price") > 100`` creates a lazy comparison expression.
+    """
+
     __slots__ = ("name",)
 
     def __init__(self, name: str) -> None:
+        """Create a column reference.
+
+        Args:
+            name: Column name used by backend compilers.
+        """
         self.name = name
 
     def __repr__(self) -> str:
@@ -200,9 +225,20 @@ class ColumnExpr(Expr):
 
 
 class Literal(Expr):
+    """A literal value embedded in an expression tree.
+
+    Args:
+        value: The scalar or backend-compatible literal value.
+    """
+
     __slots__ = ("value",)
 
     def __init__(self, value: Any) -> None:
+        """Wrap a value as an expression literal.
+
+        Args:
+            value: Value to compile as a literal.
+        """
         self.value = value
 
     def __repr__(self) -> str:
@@ -210,6 +246,8 @@ class Literal(Expr):
 
 
 class BinaryExpr(Expr):
+    """A binary operator node with left and right expression operands."""
+
     __slots__ = ("left", "op", "right")
 
     def __init__(self, op: str, left: Expr, right: Expr) -> None:
@@ -222,6 +260,8 @@ class BinaryExpr(Expr):
 
 
 class UnaryExpr(Expr):
+    """A unary operator node."""
+
     __slots__ = ("op", "operand")
 
     def __init__(self, op: str, operand: Expr) -> None:
@@ -233,6 +273,14 @@ class UnaryExpr(Expr):
 
 
 class AggExpr(Expr):
+    """A column aggregation request used by grouped queries.
+
+    Args:
+        func: Aggregation name, such as ``"mean"`` or ``"sum"``.
+        column: Expression to aggregate.
+        kwargs: Optional aggregation arguments.
+    """
+
     __slots__ = ("column", "func", "kwargs")
 
     def __init__(self, func: str, column: Expr, kwargs: dict | None = None) -> None:
@@ -245,6 +293,8 @@ class AggExpr(Expr):
 
 
 class WindowExpr(Expr):
+    """A window or cumulative operation on a column expression."""
+
     __slots__ = ("column", "func", "kwargs")
 
     def __init__(self, func: str, column: Expr, kwargs: dict) -> None:
@@ -258,6 +308,8 @@ class WindowExpr(Expr):
 
 
 class MathExpr(Expr):
+    """A scalar math operation applied to a column expression."""
+
     __slots__ = ("column", "func", "kwargs")
 
     def __init__(self, func: str, column: Expr, kwargs: dict) -> None:
@@ -271,6 +323,17 @@ class MathExpr(Expr):
 
 
 class AccessorExpr(Expr):
+    """A generic string, date, categorical, numeric, list, or struct operation.
+
+    Args:
+        namespace: Accessor family such as ``"str"`` or ``"dt"``.
+        method_name: Method or property name from the generated registry.
+        column: Source column expression.
+        args: Positional accessor arguments.
+        kwargs: Keyword accessor arguments.
+        is_property: Whether the accessor member is a property.
+    """
+
     __slots__ = ("args", "column", "is_property", "kwargs", "method_name", "namespace")
 
     def __init__(
@@ -301,6 +364,8 @@ class AccessorExpr(Expr):
 
 
 class StringExpr:
+    """Proxy that builds string accessor expressions for a column."""
+
     __slots__ = ("_expr",)
 
     _expr: Expr
@@ -408,6 +473,8 @@ class StringExpr:
 
 
 class StringMethodExpr(AccessorExpr):
+    """Expression node for a string accessor operation."""
+
     __slots__ = ()
 
     def __init__(
@@ -429,6 +496,8 @@ class StringMethodExpr(AccessorExpr):
 
 
 class DateExpr:
+    """Proxy that builds datetime accessor expressions for a column."""
+
     __slots__ = ("_expr",)
 
     _expr: Expr
@@ -536,6 +605,8 @@ class DateExpr:
 
 
 class DatePartExpr(AccessorExpr):
+    """Expression node for a datetime accessor property or method."""
+
     __slots__ = ()
 
     def __init__(
@@ -594,6 +665,14 @@ class StructExpr:
 
 
 class WhenExpr(Expr):
+    """Conditional expression built by :func:`when`.
+
+    Args:
+        condition: Boolean expression evaluated per row.
+        then_value: Value selected when the condition is true.
+        else_value: Optional value selected otherwise.
+    """
+
     __slots__ = ("condition", "else_value", "then_value")
 
     def __init__(
@@ -613,6 +692,15 @@ class WhenExpr(Expr):
 
 
 def when(condition: Expr, then_value: Any) -> WhenExpr:
+    """Start a conditional expression.
+
+    Args:
+        condition: Boolean expression evaluated per row.
+        then_value: Value selected for matching rows.
+
+    Returns:
+        A ``WhenExpr``; call ``otherwise`` to define the other branch.
+    """
     return WhenExpr(condition, _wrap(then_value))
 
 

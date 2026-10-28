@@ -297,6 +297,18 @@ _SPECIAL_HANDLERS: dict[
 def compile_accessor_method(
     expr: AccessorExpr, column: Any, backend: Literal["pandas", "polars"]
 ) -> Any:
+    from ..plugins import accessor_compiler
+
+    plugin = accessor_compiler(expr.namespace, expr.method_name)
+    if plugin is not None:
+        try:
+            return plugin(column, *expr.args, **expr.kwargs)
+        except Exception as exc:
+            raise CompileError(
+                f"Custom accessor {expr.namespace}.{expr.method_name} failed "
+                f"for the {backend} backend: {exc}"
+            ) from exc
+
     handler = _SPECIAL_HANDLERS.get((backend, expr.namespace, expr.method_name))
     if handler is not None:
         try:

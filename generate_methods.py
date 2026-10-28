@@ -130,10 +130,20 @@ METHODS: dict[str, list[PathSpec]] = {
         ("ordered", "cat.ordered", None, True),
         ("set_categories", "cat.set_categories", "cat.set_categories", False),
         ("rename_categories", "cat.rename_categories", "cat.rename_categories", False),
-        ("reorder_categories", "cat.reorder_categories", "cat.reorder_categories", False),
+        (
+            "reorder_categories",
+            "cat.reorder_categories",
+            "cat.reorder_categories",
+            False,
+        ),
         ("add_categories", "cat.add_categories", "cat.add_categories", False),
         ("remove_categories", "cat.remove_categories", "cat.remove_categories", False),
-        ("remove_unused_categories", "cat.remove_unused_categories", "cat.remove_unused_categories", False),
+        (
+            "remove_unused_categories",
+            "cat.remove_unused_categories",
+            "cat.remove_unused_categories",
+            False,
+        ),
         ("as_ordered", "cat.as_ordered", "cat.set_ordering", False),
         ("as_unordered", "cat.as_unordered", "cat.set_ordering", False),
         ("get_categories", "cat.categories", "cat.get_categories", True),
@@ -241,9 +251,11 @@ class AccessorMethodSpec(TypedDict):
 
 
 '''
-    body = "ACCESSOR_METHODS: dict[tuple[str, str], AccessorMethodSpec] = " + pprint.pformat(
-        entries, sort_dicts=True, width=88
-    ) + "\n"
+    body = (
+        "ACCESSOR_METHODS: dict[tuple[str, str], AccessorMethodSpec] = "
+        + pprint.pformat(entries, sort_dicts=True, width=88)
+        + "\n"
+    )
     OUTPUT.write_text(header + body, encoding="utf-8")
     print(f"Wrote {len(entries)} accessor definitions to {OUTPUT.relative_to(ROOT)}")
 

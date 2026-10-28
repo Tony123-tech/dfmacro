@@ -1,13 +1,21 @@
-"""DF wrapper: intercepts __getitem__ and adds query verbs."""
+"""DataFrame wrapper exposing a backend-neutral collection of query verbs.
+
+The wrapper keeps DataFrame execution eager while delegating expression
+compilation to the active backend. Use :meth:`DF.lazy` to record a plan first.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import math
+import pickle
 from collections.abc import Callable, Iterable
 from typing import Any
 
 from .compiler import _is_dask_dataframe, compile_expr
-from .expr import AggExpr, Expr
+from .expr import AggExpr, Expr, Literal
+from .optimizer import optimize_expr, optimize_plan
+from .resilience import retry
 
 
 def _is_pandas(obj: Any) -> bool:
@@ -51,6 +59,16 @@ def _unwrap_dataframe(frame: Any) -> Any:
     return frame.raw if isinstance(frame, DF) else frame
 
 
+def _expression_cache_key(expr: Expr) -> str | None:
+    """Return a stable cache key, or None when an expression cannot be serialized."""
+    try:
+        serialized = pickle.dumps(expr, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        # Arbitrary literal values can define unpickleable state; skip caching them.
+        return None
+    return hashlib.sha256(serialized).hexdigest()
+
+
 def _wrap_dataframe_result(result: Any) -> Any:
     if isinstance(result, DF):
         return result
@@ -68,6 +86,13 @@ def _get_operation(target: Any, name: str, context: str) -> Callable[..., Any]:
 
 
 class GroupByProxy:
+    """Backend-neutral grouping proxy used by :meth:`DF.groupby`.
+
+    Args:
+        df: The wrapped backend DataFrame.
+        by: One grouping column or a sequence of grouping columns.
+    """
+
     _df: Any
     _by: Any
 
@@ -77,6 +102,14 @@ class GroupByProxy:
         self._by = _resolve_column_name(by)
 
     def agg(self, **kwargs: Any) -> DF:
+        """Aggregate expression columns and return a wrapped DataFrame.
+
+        Args:
+            **kwargs: Output names mapped to aggregation expressions.
+
+        Returns:
+            A ``DF`` containing one row per group.
+        """
         if _is_pandas(self._df):
             pd_aggs = {}
             for out_col, expr in kwargs.items():
@@ -110,11 +143,32 @@ class GroupByProxy:
 
 
 class DF:
-    __slots__ = ("_df",)
+    """Wrap a Pandas, Polars, or supported Dask DataFrame.
+
+    Expressions are compiled for the underlying backend when indexed with an
+    :class:`~dfmacro.expr.Expr`. Results that are DataFrames remain wrapped;
+    access the native object through :attr:`raw`.
+
+    The wrapper exposes filtering, selection, mutation, sorting, grouping,
+    aggregation, reshaping, joins, null handling, and numeric transforms.
+    Backend-specific limitations are reported with ``NotImplementedError``.
+
+    Args:
+        df: A supported DataFrame instance.
+    """
+
+    __slots__ = ("_cache", "_df")
     _df: Any
+    _cache: dict[str, DF]
 
     def __init__(self, df: Any) -> None:
+        """Initialize a wrapper and its per-instance expression cache.
+
+        Args:
+            df: The native DataFrame to wrap.
+        """
         object.__setattr__(self, "_df", df)
+        object.__setattr__(self, "_cache", {})
 
     def _transform_column(
         self,
@@ -166,9 +220,7 @@ class DF:
         match_value = "both" if matched else "left_only"
         return DF(merged.loc[merged[marker] == match_value, self._df.columns])
 
-    def _conditional_replace(
-        self, cond: Any, other: Any, keep_matching: bool
-    ) -> DF:
+    def _conditional_replace(self, cond: Any, other: Any, keep_matching: bool) -> DF:
         if isinstance(cond, Expr):
             cond = compile_expr(cond, self._df)
         if _is_pandas(self._df):
@@ -180,37 +232,69 @@ class DF:
         replacement = None if other is None else pl.lit(other)
         if keep_matching:
             expressions = [
-                pl.when(cond)
-                .then(pl.col(column))
-                .otherwise(replacement)
-                .alias(column)
+                pl.when(cond).then(pl.col(column)).otherwise(replacement).alias(column)
                 for column in self._df.columns
             ]
         else:
             expressions = [
-                pl.when(cond)
-                .then(replacement)
-                .otherwise(pl.col(column))
-                .alias(column)
+                pl.when(cond).then(replacement).otherwise(pl.col(column)).alias(column)
                 for column in self._df.columns
             ]
         return DF(self._df.with_columns(expressions))
 
     def __getitem__(self, key: Any) -> Any:
+        """Filter with an expression or delegate ordinary indexing.
+
+        Args:
+            key: An expression predicate, column name, or backend indexer.
+
+        Returns:
+            A wrapped filtered DataFrame, a native selected column, or a
+            wrapped backend DataFrame result.
+        """
         if isinstance(key, Expr):
+            key = optimize_expr(key)
+            cache_key = _expression_cache_key(key)
+            if cache_key is not None and cache_key in self._cache:
+                return self._cache[cache_key]
+
+            if isinstance(key, Literal) and type(key.value) is bool:
+                if key.value:
+                    selected = self._df.copy() if _is_pandas(self._df) else self._df
+                elif _is_pandas(self._df):
+                    selected = self._df.iloc[0:0]
+                else:
+                    selected = self._df.head(0)
+                result = DF(selected)
+                if cache_key is not None:
+                    self._cache[cache_key] = result
+                return result
+
             mask = compile_expr(key, self._df)
             if _is_pandas(self._df):
-                return DF(self._df[mask])
-            if _is_dask_dataframe(self._df):
-                return DF(self._df[mask])
+                result = DF(self._df[mask])
+            elif _is_dask_dataframe(self._df):
+                result = DF(self._df[mask])
             else:
-                return DF(self._df.filter(mask))
+                result = DF(self._df.filter(mask))
+
+            if cache_key is not None:
+                self._cache[cache_key] = result
+            return result
         if isinstance(key, str):
             return self._df[key]
         result = self._df[key]
         return _wrap_dataframe_result(result)
 
     def select(self, *args: Any) -> DF:
+        """Select the named columns and return a new wrapper.
+
+        Args:
+            *args: Column names or column expressions.
+
+        Returns:
+            A ``DF`` containing the requested columns.
+        """
         cols = [arg.name if hasattr(arg, "name") else arg for arg in args]
         if _is_pandas(self._df):
             return DF(self._df[cols])
@@ -220,9 +304,25 @@ class DF:
             return DF(self._df.select(cols))
 
     def groupby(self, by: Any) -> GroupByProxy:
+        """Create a grouping proxy.
+
+        Args:
+            by: Grouping column or columns.
+
+        Returns:
+            A proxy whose ``agg`` method accepts named aggregation expressions.
+        """
         return GroupByProxy(self._df, by)
 
     def mutate(self, **kwargs: Any) -> DF:
+        """Add or replace columns using expressions or literal values.
+
+        Args:
+            **kwargs: Output column names mapped to expressions or values.
+
+        Returns:
+            A new ``DF`` with the requested columns.
+        """
         if _is_pandas(self._df) or _is_dask_dataframe(self._df):
             new_df = self._df
             for col_name, expr in kwargs.items():
@@ -268,6 +368,15 @@ class DF:
             return DF(self._df.sort(col_name).head(n))
 
     def order_by(self, by: Any, descending: bool = False) -> DF:
+        """Sort rows by one column.
+
+        Args:
+            by: Column name or expression.
+            descending: Whether to sort in descending order.
+
+        Returns:
+            A sorted ``DF``.
+        """
         col_name = _resolve_column_name(by)
         if _is_pandas(self._df):
             return DF(self._df.sort_values(by=col_name, ascending=not descending))
@@ -394,6 +503,17 @@ class DF:
 
     def describe(self) -> DF:
         return DF(self._df.describe())
+
+    def profile(self) -> dict:
+        """Profile the DataFrame to extract schema and statistical information.
+
+        Returns:
+            Dictionary containing profiling information with columns, dtypes,
+            null counts, unique counts, and numeric/categorical statistics.
+        """
+        from .profiling import profile as profile_df
+
+        return profile_df(self._df)
 
     def value_counts(self, col: Any) -> DF:
         col_name = _resolve_column_name(col)
@@ -546,26 +666,22 @@ class DF:
     def rolling(self, window: Any, col: Any, func: str = "mean") -> DF:
         return self._transform_column(
             col,
-            lambda series: _get_operation(
-                series.rolling(window), func, "rolling"
-            )(),
-            lambda expression: _get_operation(
-                expression, f"rolling_{func}", "rolling"
-            )(window_size=window),
+            lambda series: _get_operation(series.rolling(window), func, "rolling")(),
+            lambda expression: _get_operation(expression, f"rolling_{func}", "rolling")(
+                window_size=window
+            ),
         )
 
     def ewm(self, span: float, col: Any, func: str = "mean") -> DF:
         return self._transform_column(
             col,
             lambda series: _get_operation(series.ewm(span=span), func, "EWM")(),
-            lambda expression: _get_operation(
-                expression, f"ewm_{func}", "EWM"
-            )(span=span),
+            lambda expression: _get_operation(expression, f"ewm_{func}", "EWM")(
+                span=span
+            ),
         )
 
-    def resample(
-        self, rule: str, col: Any, func: str = "sum", on: Any = None
-    ) -> DF:
+    def resample(self, rule: str, col: Any, func: str = "sum", on: Any = None) -> DF:
         col_name = _resolve_column_name(col)
         if _is_pandas(self._df):
             result = _get_operation(
@@ -695,9 +811,7 @@ class DF:
             import pandas as pd
 
             return DF(pd.merge_asof(self._df, other_df, on=on_col))
-        return DF(
-            self._df.sort(on_col).join_asof(other_df.sort(on_col), on=on_col)
-        )
+        return DF(self._df.sort(on_col).join_asof(other_df.sort(on_col), on=on_col))
 
     def cross_join(self, other: Any) -> DF:
         _raise_if_dask_unsupported(self._df, "Cross join")
@@ -714,9 +828,7 @@ class DF:
 
     def apply(self, func: Callable[..., Any], axis: int = 0) -> Any:
         if not _is_pandas(self._df):
-            raise NotImplementedError(
-                "apply is only supported for pandas DataFrames."
-            )
+            raise NotImplementedError("apply is only supported for pandas DataFrames.")
         result = self._df.apply(func, axis=axis)
         return _wrap_dataframe_result(result)
 
@@ -774,9 +886,29 @@ class DF:
             return DF(self._df.join(other_df, on=on_col, how=how))
 
     def head(self, n: int = 5) -> DF:
+        """Return the first ``n`` rows.
+
+        Args:
+            n: Number of rows to return, following backend ``head`` semantics.
+
+        Returns:
+            A ``DF`` containing the requested leading rows.
+        """
+        # Route through the same plan optimizer used by LazyDF pipelines.
+        optimized_plan = optimize_plan([("head", (n,), {})])
+        _, args, _ = optimized_plan[0]
+        n = args[0]
         return DF(self._df.head(n))
 
     def tail(self, n: int = 5) -> DF:
+        """Return the last ``n`` rows.
+
+        Args:
+            n: Number of rows to return, following backend ``tail`` semantics.
+
+        Returns:
+            A ``DF`` containing the requested trailing rows.
+        """
         return DF(self._df.tail(n))
 
     def slice(self, offset: int, length: int) -> DF:
@@ -827,14 +959,66 @@ class DF:
             return DF(self._df.sample(n=n, seed=seed))
 
     def explain(self) -> str:
-        return repr(self._df)
+        """Return a readable summary of the eager DataFrame and its columns."""
+        columns = getattr(self._df, "columns", ())
+        if _is_pandas(self._df):
+            details = [f"{name}: {dtype}" for name, dtype in self._df.dtypes.items()]
+        else:
+            schema = getattr(self._df, "schema", {})
+            try:
+                details = [f"{name}: {dtype}" for name, dtype in schema.items()]
+            except AttributeError:
+                details = [str(name) for name in columns]
+        lines = [f"DataFrame ({type(self._df).__module__}.{type(self._df).__name__})"]
+        lines.extend(f"  {item}" for item in details)
+        return "\n".join(lines)
+
+    def generate_pytest_code(
+        self, filename: str, test_name: str = "test_dataframe_schema"
+    ) -> str:
+        """Generate pytest code to validate DataFrame schema and constraints.
+
+        Args:
+            filename: Name of the test file to generate
+            test_name: Name of the test function
+
+        Returns:
+            String containing pytest code
+        """
+        from .profiling import generate_pytest_code as generate_pytest
+
+        return generate_pytest(self._df, filename, test_name)
+
+    @retry()
+    def collect(self) -> DF:
+        """Materialize a native lazy frame, or return this eager wrapper.
+
+        Returns:
+            A wrapper around the materialized backend DataFrame.
+        """
+        collect_method = getattr(self._df, "collect", None)
+        if not callable(collect_method):
+            return self
+        result = collect_method()
+        return _wrap_dataframe_result(result)
 
     def lazy(self) -> Any:
+        """Return a lazy plan builder over this DataFrame.
+
+        Returns:
+            A :class:`dfmacro.lazy.LazyDF` that records supported operations
+            until ``collect`` is called.
+        """
         from .lazy import LazyDF
 
         return LazyDF(self._df)
 
     def to_duckdb(self) -> Any:
+        """Create a DuckDB-backed wrapper for SQL execution.
+
+        Returns:
+            A ``DuckDBDF`` registered over the current DataFrame.
+        """
         from .duckdb_wrapper import DuckDBDF
 
         return DuckDBDF(self._df)
@@ -861,4 +1045,5 @@ class DF:
 
     @property
     def raw(self) -> Any:
+        """Return the native backend DataFrame."""
         return self._df

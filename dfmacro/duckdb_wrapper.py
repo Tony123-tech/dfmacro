@@ -8,6 +8,20 @@ import duckdb
 
 from .compiler.sql import compile_expr
 from .expr import AggExpr, Expr
+from .resilience import retry
+
+
+@retry(
+    exceptions=(
+        TimeoutError,
+        ConnectionError,
+        duckdb.ConnectionException,
+        duckdb.IOException,
+    )
+)
+def _execute_dataframe(connection: Any, query: str) -> Any:
+    """Execute a DuckDB query and materialize its result with retry."""
+    return connection.execute(query).df()
 
 
 class DuckDBGroupBy:
@@ -30,7 +44,7 @@ class DuckDBGroupBy:
             f"FROM {self._view_name} "
             f'GROUP BY "{self._by}"'
         )
-        result = self._conn.execute(query).df()
+        result = _execute_dataframe(self._conn, query)
         return DuckDBDF(result, "result_df", self._conn)
 
 
@@ -53,7 +67,7 @@ class DuckDBDF:
         if isinstance(key, Expr):
             sql_where = compile_expr(key)
             query = f"SELECT * FROM {self._view_name} WHERE {sql_where}"
-            result = self._conn.execute(query).df()
+            result = _execute_dataframe(self._conn, query)
             return DuckDBDF(result, "result_df", self._conn)
         raise TypeError("DuckDBDF only supports expression filtering.")
 
@@ -67,7 +81,7 @@ class DuckDBDF:
             select_parts.append(f'{sql_expr} AS "{out_col}"')
 
         query = f"SELECT {', '.join(select_parts)} FROM {self._view_name}"
-        result = self._conn.execute(query).df()
+        result = _execute_dataframe(self._conn, query)
         return DuckDBDF(result, "result_df", self._conn)
 
     def join(self, other: Any, on: Any, how: str = "inner") -> Any:
@@ -81,7 +95,7 @@ class DuckDBDF:
             f"SELECT * FROM {self._view_name} a "
             f"{join_type} JOIN {other_view} b USING ({on_col})"
         )
-        result = self._conn.execute(query).df()
+        result = _execute_dataframe(self._conn, query)
         return DuckDBDF(result, "result_df", self._conn)
 
     def lazy(self) -> LazyDuckDBDF:
@@ -168,7 +182,7 @@ class LazyDuckDBDF:
             query += f" WHERE {' AND '.join(where_parts)}"
         query += groupby_part
 
-        result = self._conn.execute(query).df()
+        result = _execute_dataframe(self._conn, query)
         return DuckDBDF(result, "result_df", self._conn)
 
     def __repr__(self) -> str:
