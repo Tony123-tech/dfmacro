@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import math
+from datetime import datetime
 
 import pandas as pd
 import pytest
 
-from dfmacro import DF, enable
+from dfmacro import DF, df_wrapper, enable
 from dfmacro.expr import ColumnExpr
-import dfmacro.df_wrapper as df_wrapper
 
 
 @pytest.fixture
@@ -278,10 +277,12 @@ def test_polars_core_verbs():
     out = result(source)
     assert out.raw["price"].to_list() == [200, 150]
     assert out.raw["double_price"].to_list() == [400, 300]
-    assert (
-        DF(source).isin({"price": [50, 200]}).raw["price"].to_list()
-        == [True, False, True, False]
-    )
+    assert DF(source).isin({"price": [50, 200]}).raw["price"].to_list() == [
+        True,
+        False,
+        True,
+        False,
+    ]
 
     @enable(source)
     def between_result(df):
@@ -326,9 +327,11 @@ def test_describe_pandas_and_polars(numeric_df):
 def test_value_counts_pandas_and_polars(df):
     pl = pytest.importorskip("polars")
     pandas_result = DF(df).value_counts("category").raw
-    polars_result = DF(
-        pl.DataFrame({"category": ["books", "electronics", "electronics", "books"]})
-    ).value_counts("category").raw
+    polars_result = (
+        DF(pl.DataFrame({"category": ["books", "electronics", "electronics", "books"]}))
+        .value_counts("category")
+        .raw
+    )
 
     assert pandas_result.to_dict("records") == [
         {"category": "books", "count": 2},
@@ -344,9 +347,11 @@ def test_corr_pandas_and_polars():
     pl = pytest.importorskip("polars")
     source = pd.DataFrame({"x": [1, 2, 3], "y": [3, 5, 7], "label": ["a", "b", "c"]})
     pandas_result = DF(source).corr().raw
-    polars_result = DF(
-        pl.DataFrame({"x": [1, 2, 3], "y": [3, 5, 7], "label": ["a", "b", "c"]})
-    ).corr().raw
+    polars_result = (
+        DF(pl.DataFrame({"x": [1, 2, 3], "y": [3, 5, 7], "label": ["a", "b", "c"]}))
+        .corr()
+        .raw
+    )
 
     assert pandas_result.loc["x", "y"] == pytest.approx(1)
     assert polars_result.columns == ["variable", "x", "y"]
@@ -369,9 +374,9 @@ def test_cov_pandas_and_polars():
 def test_pct_change_pandas_and_polars(numeric_df):
     pl = pytest.importorskip("polars")
     pandas_result = DF(numeric_df).pct_change("price").raw["price"]
-    polars_result = DF(pl.DataFrame({"price": [50, 150, 200, 80]})).pct_change(
-        "price"
-    ).raw["price"]
+    polars_result = (
+        DF(pl.DataFrame({"price": [50, 150, 200, 80]})).pct_change("price").raw["price"]
+    )
 
     assert pandas_result.iloc[1:].tolist() == pytest.approx([2, 1 / 3, -0.6])
     assert polars_result[1:].to_list() == pytest.approx([2, 1 / 3, -0.6])
@@ -432,9 +437,11 @@ def test_melt_pandas_and_polars():
     pl = pytest.importorskip("polars")
     source = pd.DataFrame({"id": [1, 2], "left": [10, 20], "right": [30, 40]})
     pandas_result = DF(source).melt(id_vars="id", value_vars=["left", "right"]).raw
-    polars_result = DF(
-        pl.DataFrame({"id": [1, 2], "left": [10, 20], "right": [30, 40]})
-    ).melt(id_vars="id", value_vars=["left", "right"]).raw
+    polars_result = (
+        DF(pl.DataFrame({"id": [1, 2], "left": [10, 20], "right": [30, 40]}))
+        .melt(id_vars="id", value_vars=["left", "right"])
+        .raw
+    )
 
     assert pandas_result.to_dict("records") == [
         {"id": 1, "variable": "left", "value": 10},
@@ -470,12 +477,12 @@ def test_pivot_table_pandas_and_polars_aggregates_duplicates():
         "kind": ["a", "a", "b"],
         "value": [1, 3, 8],
     }
-    pandas_result = DF(pd.DataFrame(data)).pivot_table(
-        "date", "kind", "value", aggfunc="sum"
-    ).raw
-    polars_result = DF(pl.DataFrame(data)).pivot_table(
-        "date", "kind", "value", aggfunc="sum"
-    ).raw
+    pandas_result = (
+        DF(pd.DataFrame(data)).pivot_table("date", "kind", "value", aggfunc="sum").raw
+    )
+    polars_result = (
+        DF(pl.DataFrame(data)).pivot_table("date", "kind", "value", aggfunc="sum").raw
+    )
 
     assert pandas_result.loc["2024-01", "a"] == 4
     assert polars_result["a"].item() == 4
@@ -487,9 +494,11 @@ def test_rolling_pandas_and_polars(func):
     pl = pytest.importorskip("polars")
     source = pd.DataFrame({"value": [1.0, 2.0, 3.0, 4.0]})
     pandas_result = DF(source).rolling(2, "value", func=func).raw["value"]
-    polars_result = DF(
-        pl.DataFrame({"value": [1.0, 2.0, 3.0, 4.0]})
-    ).rolling(2, "value", func=func).raw["value"]
+    polars_result = (
+        DF(pl.DataFrame({"value": [1.0, 2.0, 3.0, 4.0]}))
+        .rolling(2, "value", func=func)
+        .raw["value"]
+    )
 
     expected = [1.5, 2.5, 3.5] if func == "mean" else [3.0, 5.0, 7.0]
     assert pandas_result.iloc[1:].tolist() == pytest.approx(expected)
@@ -498,18 +507,19 @@ def test_rolling_pandas_and_polars(func):
 
 def test_rolling_reports_unsupported_function():
     with pytest.raises(ValueError, match="Unsupported rolling function 'not_a_stat'"):
-        DF(pd.DataFrame({"value": [1.0, 2.0]})).rolling(
-            2, "value", func="not_a_stat"
-        )
+        DF(pd.DataFrame({"value": [1.0, 2.0]})).rolling(2, "value", func="not_a_stat")
 
 
 def test_ewm_mean_pandas_and_polars():
     pl = pytest.importorskip("polars")
     source = pd.DataFrame({"value": [1.0, 2.0, 3.0]})
     pandas_result = DF(source).ewm(2, "value").raw["value"].tolist()
-    polars_result = DF(
-        pl.DataFrame({"value": [1.0, 2.0, 3.0]})
-    ).ewm(2, "value").raw["value"].to_list()
+    polars_result = (
+        DF(pl.DataFrame({"value": [1.0, 2.0, 3.0]}))
+        .ewm(2, "value")
+        .raw["value"]
+        .to_list()
+    )
 
     assert polars_result == pytest.approx(pandas_result)
 
@@ -521,8 +531,8 @@ def test_resample_pandas_and_polars():
     polars_source = pl.DataFrame(
         {
             "date": pl.datetime_range(
-                    start=datetime(2024, 1, 1),
-                    end=datetime(2024, 1, 4),
+                start=datetime(2024, 1, 1),
+                end=datetime(2024, 1, 4),
                 interval="1d",
                 eager=True,
             ),
@@ -550,7 +560,9 @@ def test_asfreq_pandas_only(numeric_df):
 
 def test_interpolate_pandas_and_polars():
     pl = pytest.importorskip("polars")
-    pandas_result = DF(pd.DataFrame({"value": [1.0, float("nan"), 3.0]})).interpolate().raw
+    pandas_result = (
+        DF(pd.DataFrame({"value": [1.0, float("nan"), 3.0]})).interpolate().raw
+    )
     polars_result = DF(pl.DataFrame({"value": [1.0, None, 3.0]})).interpolate().raw
 
     assert pandas_result["value"].tolist() == [1.0, 2.0, 3.0]
@@ -574,14 +586,18 @@ def test_directional_fill_pandas_and_polars(method):
 def test_nunique_pandas_and_polars(df):
     pl = pytest.importorskip("polars")
     pandas_result = DF(df).nunique()
-    polars_result = DF(
-        pl.DataFrame(
-            {
-                "price": [50, 150, 200, 80],
-                "category": ["books", "electronics", "electronics", "books"],
-            }
+    polars_result = (
+        DF(
+            pl.DataFrame(
+                {
+                    "price": [50, 150, 200, 80],
+                    "category": ["books", "electronics", "electronics", "books"],
+                }
+            )
         )
-    ).nunique().raw
+        .nunique()
+        .raw
+    )
 
     assert pandas_result.to_dict() == {"price": 4, "category": 2}
     assert polars_result.row(0, named=True) == {"price": 4, "category": 2}
@@ -616,12 +632,12 @@ def test_merge_pandas_and_polars():
     right = pd.DataFrame({"key": [2, 3], "right": ["x", "y"]})
     pandas_result = DF(left).merge(right, on="key").raw
 
-    polars_result = DF(pl.DataFrame({"key": [1, 2], "left": ["a", "b"]})).merge(
-        pl.DataFrame({"key": [2, 3], "right": ["x", "y"]}), on="key"
-    ).raw
-    assert pandas_result.to_dict("records") == [
-        {"key": 2, "left": "b", "right": "x"}
-    ]
+    polars_result = (
+        DF(pl.DataFrame({"key": [1, 2], "left": ["a", "b"]}))
+        .merge(pl.DataFrame({"key": [2, 3], "right": ["x", "y"]}), on="key")
+        .raw
+    )
+    assert pandas_result.to_dict("records") == [{"key": 2, "left": "b", "right": "x"}]
     assert polars_result.to_dicts() == [{"key": 2, "left": "b", "right": "x"}]
 
 
@@ -663,19 +679,21 @@ def test_merge_asof_pandas_and_polars():
 
 def test_cross_join_pandas_and_polars():
     pl = pytest.importorskip("polars")
-    pandas_result = DF(pd.DataFrame({"a": [1, 2]})).cross_join(
-        pd.DataFrame({"b": ["x", "y"]})
-    ).raw
-    polars_result = DF(pl.DataFrame({"a": [1, 2]})).cross_join(
-        pl.DataFrame({"b": ["x", "y"]})
-    ).raw
+    pandas_result = (
+        DF(pd.DataFrame({"a": [1, 2]})).cross_join(pd.DataFrame({"b": ["x", "y"]})).raw
+    )
+    polars_result = (
+        DF(pl.DataFrame({"a": [1, 2]})).cross_join(pl.DataFrame({"b": ["x", "y"]})).raw
+    )
 
     assert len(pandas_result) == len(polars_result) == 4
     assert pandas_result.iloc[0].tolist() == [1, "x"]
     assert polars_result.row(0) == (1, "x")
 
 
-@pytest.mark.parametrize("method, expected", [("semi_join", [2]), ("anti_join", [1, 3])])
+@pytest.mark.parametrize(
+    "method, expected", [("semi_join", [2]), ("anti_join", [1, 3])]
+)
 def test_semi_and_anti_join_pandas_and_polars(method, expected):
     pl = pytest.importorskip("polars")
     pandas_left = pd.DataFrame({"key": [1, 2, 3], "value": ["a", "b", "c"]})
@@ -770,3 +788,21 @@ def test_statistics_and_windows_accept_column_expressions(numeric_df):
         return df.shift(price)  # noqa: F821
 
     assert result(numeric_df).raw["price"].iloc[1:].tolist() == [50, 150, 200]
+
+
+def test_getattr_on_uninitialized_df_raises_cleanly():
+    obj = DF.__new__(DF)
+    with pytest.raises(AttributeError, match="uninitialized"):
+        _ = obj.some_attr
+
+
+def test_getattr_missing_attribute_raised_df_error():
+    df = DF(pd.DataFrame({"a": [1]}))
+    with pytest.raises(AttributeError, match="'DF' object has no attribute 'nope'"):
+        _ = df.nope
+
+
+def test_setattr_on_slots_does_not_recurse():
+    df = DF(pd.DataFrame({"a": [1]}))
+    df._cache = {"k": "v"}
+    assert df._cache == {"k": "v"}

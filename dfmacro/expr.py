@@ -187,6 +187,7 @@ class Expr:
     def struct(self) -> StructExpr:
         return StructExpr(self)
 
+
 def _wrap(value: Any) -> Expr | Literal:
     if isinstance(value, Expr):
         return value
@@ -194,9 +195,16 @@ def _wrap(value: Any) -> Expr | Literal:
 
 
 def _check_precedence_trap(op: str, other: Any) -> None:
-    if isinstance(other, Expr):
+    if isinstance(other, BinaryExpr) and other.op in ("&", "|"):
         raise TypeError(
-            f"Operator precedence trap detected: '{op}' received an expression as its right operand. Wrap the comparison in parentheses."
+            f"Operator precedence trap detected: '{op}' received a boolean expression as its right operand."
+            f"Wrap each comparision in parentheses, e.g. (a > 1) & (b < 2)."
+        )
+
+    if isinstance(other, UnaryExpr) and other.op == "~":
+        raise TypeError(
+            f"Operator precedence trap detected: '{op}' received a boolean expression as its right operand."
+            f"Wrap each comparision in parentheses, e.g. (a > 1) & (b < 2)."
         )
 
 
@@ -397,9 +405,7 @@ class StringExpr:
     def len(self) -> StringMethodExpr:
         return StringMethodExpr("len", self._expr, {})
 
-    def replace(
-        self, pat: str, repl: str, regex: bool = False
-    ) -> StringMethodExpr:
+    def replace(self, pat: str, repl: str, regex: bool = False) -> StringMethodExpr:
         return StringMethodExpr(
             "replace", self._expr, {"pat": pat, "repl": repl, "regex": regex}
         )
@@ -410,9 +416,7 @@ class StringExpr:
     def slice(
         self, start: int | None = None, length: int | None = None
     ) -> StringMethodExpr:
-        return StringMethodExpr(
-            "slice", self._expr, {"start": start, "length": length}
-        )
+        return StringMethodExpr("slice", self._expr, {"start": start, "length": length})
 
     def pad(
         self, width: int, side: str = "left", fillchar: str = " "
@@ -765,10 +769,8 @@ def structural_eq(a: object, b: object) -> bool:
                 cast(AccessorMethodExpr, a).column,
                 cast(AccessorMethodExpr, b).column,
             )
-            and cast(AccessorMethodExpr, a).args
-            == cast(AccessorMethodExpr, b).args
-            and cast(AccessorMethodExpr, a).kwargs
-            == cast(AccessorMethodExpr, b).kwargs
+            and cast(AccessorMethodExpr, a).args == cast(AccessorMethodExpr, b).args
+            and cast(AccessorMethodExpr, a).kwargs == cast(AccessorMethodExpr, b).kwargs
             and cast(AccessorMethodExpr, a).is_property
             == cast(AccessorMethodExpr, b).is_property
         )
@@ -919,6 +921,7 @@ def _install_accessor_method(
     accessor_class = _ACCESSOR_CLASSES[namespace]
 
     if is_property:
+
         def get_property(self: Any) -> AccessorExpr:
             return _make_accessor_expression(
                 namespace, method_name, self._expr, (), {}, True

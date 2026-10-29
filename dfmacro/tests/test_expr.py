@@ -85,3 +85,8 @@ def test_repr_is_readable():
     assert ">" in text
     assert "==" in text
     assert "&" in text
+
+def test_column_vs_column_comparison_is_allowed():
+    expr = ColumnExpr("a") > ColumnExpr("b")
+    expected = BinaryExpr(">", ColumnExpr("a"), ColumnExpr("b"))
+    assert structural_eq(expr, expected)

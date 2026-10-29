@@ -82,15 +82,22 @@ def compile_expr(expr: Expr, df: Any = None) -> str:
 
     if isinstance(expr, StringMethodExpr):
         col = compile_expr(expr.column)
-        if expr.method == "contains":
-            pat = expr.kwargs["pat"].replace("'", "''")
-            return f"{col} LIKE '%{pat}%'"
-        if expr.method == "startswith":
-            pat = expr.kwargs["pat"].replace("'", "''")
-            return f"{col} LIKE '{pat}%'"
-        if expr.method == "endswith":
-            pat = expr.kwargs["pat"].replace("'", "''")
-            return f"{col} LIKE '%{pat}'"
+        if expr.method in ("contains", "startswith", "endswith"):
+            raw = expr.kwargs["pat"]
+            if expr.kwargs.get("regex", False):
+                escaped = raw.replace("'", "''")
+                return f"REGEXP_MATCHES({col}, '{escaped}')"
+            escaped = (
+                raw.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+                .replace("'", "''")
+            )
+            if expr.method == "contains":
+                return f"{col} LIKE '%{escaped}%' ESCAPE '\\'"
+            if expr.method == "startswith":
+                return f"{col} LIKE '{escaped}%' ESCAPE '\\'"
+            return f"{col} LIKE '%{escaped}' ESCAPE '\\'"
         if expr.method == "lower":
             return f"LOWER({col})"
         if expr.method == "upper":
@@ -122,7 +129,7 @@ def compile_expr(expr: Expr, df: Any = None) -> str:
         if expr.part == "minute":
             return f"EXTRACT(MINUTE FROM {col})"
         if expr.part == "dayofweek":
-            return f"EXTRACT(DOW FROM {col})"
+            return f"(EXTRACT(ISODOW FROM {col}) - 1)"
         if expr.part == "quarter":
             return f"EXTRACT(QUARTER FROM {col})"
         if expr.part == "strftime":
@@ -159,7 +166,9 @@ def compile_expr(expr: Expr, df: Any = None) -> str:
 def _quote_identifier(identifier: Any) -> str:
     """Quote one SQL identifier, escaping embedded quote characters."""
     if not isinstance(identifier, str) or not identifier:
-        raise CompileError(f"SQL identifiers must be non-empty strings, got {identifier!r}.")
+        raise CompileError(
+            f"SQL identifiers must be non-empty strings, got {identifier!r}."
+        )
     return '"' + identifier.replace('"', '""') + '"'
 
 
@@ -225,10 +234,7 @@ def _compile_plan_ctes(
     for operation, args, kwargs in plan:
         relation = _quote_identifier(current)
         if operation == "filter":
-            query = (
-                f"SELECT * FROM {relation} "
-                f"WHERE {compile_expr(args[0])}"
-            )
+            query = f"SELECT * FROM {relation} " f"WHERE {compile_expr(args[0])}"
         elif operation == "mutate":
             updates = dict(kwargs)
             if known_columns is None:
@@ -267,9 +273,7 @@ def _compile_plan_ctes(
                 raise CompileError("SQL join plans must contain a LazyDF branch.")
             join_keys = kwargs.get("on")
             join_keys = (
-                list(join_keys)
-                if isinstance(join_keys, (list, tuple))
-                else [join_keys]
+                list(join_keys) if isinstance(join_keys, (list, tuple)) else [join_keys]
             )
             if not join_keys or any(not isinstance(key, str) for key in join_keys):
                 raise CompileError("SQL joins require one or more string column names.")
@@ -347,8 +351,7 @@ def _compile_plan_ctes(
                         f"AS {_quote_identifier(right_alias)} ON {conditions}"
                     )
                     known_columns = [
-                        name + "_x" if name in overlaps else name
-                        for name in left_names
+                        name + "_x" if name in overlaps else name for name in left_names
                     ] + [
                         name + "_y" if name in overlaps else name
                         for name in right_names
@@ -471,9 +474,7 @@ def _compile_plan_ctes(
     return current, known_columns, order_terms
 
 
-def _add_cte(
-    ctes: list[tuple[str, str]], state: dict[str, int], query: str
-) -> str:
+def _add_cte(ctes: list[tuple[str, str]], state: dict[str, int], query: str) -> str:
     state["cte"] += 1
     name = f"_dfmacro_{state['cte']}"
     ctes.append((name, query))

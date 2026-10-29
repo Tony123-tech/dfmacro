@@ -12,15 +12,27 @@ class CompileError(TypeError):
 
 
 def _is_polars(df: Any) -> bool:
-    return type(df).__module__.startswith("polars")
+    try:
+        import polars as pl
+    except ImportError:
+        return False
+    return isinstance(df, pl.DataFrame)
 
 
 def _is_pandas(df: Any) -> bool:
-    return type(df).__module__.startswith("pandas")
+    try:
+        import pandas as pd
+    except ImportError:
+        return False
+    return isinstance(df, pd.DataFrame)
 
 
 def _is_dask_dataframe(df: Any) -> bool:
-    return type(df).__module__.startswith("dask.dataframe")
+    try:
+        import dask.dataframe as dd
+    except ImportError:
+        return False
+    return isinstance(df, dd.DataFrame)
 
 
 def compile_expr(expr: Expr, df: Any) -> Any:

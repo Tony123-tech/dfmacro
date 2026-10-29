@@ -19,7 +19,11 @@ from .resilience import retry
 
 
 def _is_pandas(obj: Any) -> bool:
-    return type(obj).__module__.startswith("pandas")
+    try:
+        import pandas as pd
+    except ImportError:
+        return False
+    return isinstance(obj, pd.DataFrame)
 
 
 def _raise_if_dask_unsupported(df: Any, operation: str) -> None:
@@ -327,24 +331,23 @@ class DF:
             new_df = self._df
             for col_name, expr in kwargs.items():
                 if isinstance(expr, Expr):
-                    value = compile_expr(expr, self._df)
+                    value = compile_expr(expr, new_df)
                 else:
                     value = expr
                 new_df = new_df.assign(**{col_name: value})
         else:
             import polars as pl
 
-            exprs = []
+            new_df = self._df
             for col_name, expr in kwargs.items():
                 if isinstance(expr, Expr):
-                    compiled = compile_expr(expr, self._df)
-                    exprs.append(compiled.alias(col_name))
+                    compiled = compile_expr(expr, new_df)
+                    new_df = new_df.with_columns(compiled.alias(col_name))
                 else:
                     if isinstance(expr, pl.Expr):
-                        exprs.append(expr.alias(col_name))
+                        new_df = new_df.with_columns(expr.alias(col_name))
                     else:
-                        exprs.append(pl.lit(expr).alias(col_name))
-            new_df = self._df.with_columns(exprs)
+                        new_df = new_df.with_columns(pl.lit(expr).alias(col_name))
         return DF(new_df)
 
     def where(self, cond: Any, other: Any = None) -> DF:
@@ -894,10 +897,6 @@ class DF:
         Returns:
             A ``DF`` containing the requested leading rows.
         """
-        # Route through the same plan optimizer used by LazyDF pipelines.
-        optimized_plan = optimize_plan([("head", (n,), {})])
-        _, args, _ = optimized_plan[0]
-        n = args[0]
         return DF(self._df.head(n))
 
     def tail(self, n: int = 5) -> DF:
@@ -1024,7 +1023,19 @@ class DF:
         return DuckDBDF(self._df)
 
     def __getattr__(self, name: str) -> Any:
-        attr = getattr(self._df, name)
+        if name in ("_df", "_cache"):
+            raise AttributeError(name)
+        try:
+            df = object.__getattribute__(self, "_df")
+        except AttributeError:
+            raise AttributeError(
+                f"'DF' object has no attribute '{name}' (uninitialized)"
+            )
+
+        try:
+            attr = getattr(df, name)
+        except AttributeError:
+            raise AttributeError(f"'DF' object has no attribute '{name}'")
         if callable(attr):
 
             def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -1035,7 +1046,10 @@ class DF:
         return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
-        setattr(self._df, name, value)
+        if name in ("_df", "_cache"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(object.__getattribute__(self, "_df"), name, value)
 
     def __repr__(self) -> str:
         return f"DF({self._df!r})"

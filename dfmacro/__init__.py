@@ -13,7 +13,12 @@ from .profiling import (
     validate_dataframe,
 )
 
-__version__ = "0.0.1"
+from importlib.metadata import PackageNotFoundError, version as _version
+
+try:
+    __version__ = _version("dfmacro")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
 __all__ = [
     "DF",
     "ColumnExpr",
