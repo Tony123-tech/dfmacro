@@ -17,3 +17,4 @@ chrono = "0.4"
 pyo3-arrow = { version = "0.5", default-features = false }
 arrow-array = "53"
 arrow-schema = "53"
+ahash = "0.8"
